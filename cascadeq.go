@@ -585,7 +585,7 @@ func (q *Queue) makeFilePath(fileNum int64) string {
 	return filepath.Join(q.dir, q.makeFileName(fileNum))
 }
 
-func (q *Queue) handleReadError(readPath, qname string) {
+func (q *Queue) handleReadError(readPath string) {
 	badName := readPath + BadFileExt
 	var (
 		badn        int
@@ -639,14 +639,14 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 			}
 			if err != nil {
 				q.logger.Error("failed to load file", slog.String("path", readPath), slog.Any("err", err))
-				q.handleReadError(readPath, q.name)
+				q.handleReadError(readPath)
 				continue // read next file
 			}
 		}
 		err = os.Remove(readPath)
 		if err != nil {
 			q.logger.Error("failed to remove file", slog.String("path", readPath), slog.Any("err", err))
-			q.handleReadError(readPath, q.name)
+			q.handleReadError(readPath)
 		}
 	}
 
