@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -50,6 +50,7 @@ type Queue struct {
 	closeMutex   sync.RWMutex
 	dir          string
 	gzip         bool
+	logger       *slog.Logger
 	name         string
 	snapInterval time.Duration
 
@@ -78,17 +79,27 @@ type Stats struct {
 
 // WithGzip enables, if passed true, gzip compression of buffer files.
 func WithGzip(enable bool) func(*Queue) {
-	return func(fq *Queue) {
-		fq.gzip = enable
+	return func(q *Queue) {
+		q.gzip = enable
+	}
+}
+
+// WithLogger sets the slog.Logger instance to use for logging. This replaces
+// the cascadeq defaule slog.Logger with a JSON handler that writes to stderr.
+func WithLogger(logger *slog.Logger) func(*Queue) {
+	return func(q *Queue) {
+		if logger != nil {
+			q.logger = logger
+		}
 	}
 }
 
 // WithMaxMemory sets the maximum amount of memory used by all items in the
 // queue before items are written to disk.
 func WithMaxMemory(maxBytes int) func(*Queue) {
-	return func(fq *Queue) {
+	return func(q *Queue) {
 		if maxBytes > 0 {
-			fq.maxMemBytes = maxBytes
+			q.maxMemBytes = maxBytes
 		}
 	}
 }
@@ -156,6 +167,13 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 	for _, opt := range options {
 		opt(q)
 	}
+	if q.logger == nil {
+		handler := slog.NewJSONHandler(os.Stderr, nil)
+		attrs := []slog.Attr{
+			slog.String(pkgName, name),
+		}
+		q.logger = slog.New(handler.WithAttrs(attrs))
+	}
 	if q.maxItemSize < q.minItemSize {
 		return nil, errors.New("minimum item size must be less than maximum")
 	}
@@ -163,6 +181,7 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 		return nil, fmt.Errorf("max memory size (%d bytes) is too small for minimum item size (%d bytes)", q.maxMemBytes, q.minItemSize)
 	}
 
+	q.logger.Debug("starting", slog.Bool("gzip", q.gzip), slog.Bool("snapshots", q.snapInterval != 0))
 	err := q.readQueueDir()
 	if err != nil {
 		return nil, err
@@ -244,7 +263,7 @@ func (q *Queue) Put(item []byte) (err error) {
 	}
 
 	if dataLen < q.minItemSize || dataLen > q.maxItemSize {
-		return fmt.Errorf("%s-%s: invalid item size (%d) min=%d max=%d", pkgName, q.name, dataLen, q.minItemSize, q.maxItemSize)
+		return fmt.Errorf("invalid item size (%d) min=%d max=%d", dataLen, q.minItemSize, q.maxItemSize)
 	}
 
 	q.input <- item
@@ -363,7 +382,7 @@ func (q *Queue) run() {
 				// file. This will overwrite any existing tailQ snapshot.
 				err := q.saveTailToNextFile(&tailQ)
 				if err != nil {
-					q.inputRsp <- fmt.Errorf("%s-%s: failed saving queue to file: %w", pkgName, q.name, err)
+					q.inputRsp <- fmt.Errorf("failed saving queue to file: %w", err)
 					continue
 				}
 				tailQBytes = 0
@@ -399,7 +418,7 @@ func (q *Queue) run() {
 							// restart and incorrectly replayed.
 							err := os.Remove(q.makeFilePath(tailSnapNum))
 							if err != nil && !errors.Is(err, fs.ErrNotExist) {
-								log.Printf("failed to remove snapshot: %s", err)
+								q.logger.Error("failed to remove snapshot", slog.Any("err", err))
 							}
 						}
 					} else {
@@ -482,7 +501,7 @@ func (q *Queue) run() {
 					if q.files.Len() != 0 && tailQ.Len() >= maxItems || tailQBytes >= maxBytes {
 						err := q.saveTailToNextFile(&tailQ)
 						if err != nil {
-							log.Printf("%s-%s: failed saving tail queue to file: %s", pkgName, q.name, err)
+							q.logger.Error("failed to save tail queue to file", slog.Any("err", err))
 						} else {
 							tailQBytes = 0
 						}
@@ -491,7 +510,7 @@ func (q *Queue) run() {
 
 					err := q.snapshotMemQueue(&headQ, tq, false)
 					if err != nil {
-						log.Printf("%s-%s: failed saving snapshot to file: %s", pkgName, q.name, err)
+						q.logger.Error("failed to save snapshot to file", slog.Any("err", err))
 						// Try again in two more snapCheck intervals.
 						snapCount++
 						continue
@@ -566,15 +585,14 @@ func (q *Queue) makeFilePath(fileNum int64) string {
 	return filepath.Join(q.dir, q.makeFileName(fileNum))
 }
 
-func (q *Queue) handleReadError(readPath, qname string, err error) error {
-	log.Printf("%s-%s: %s", pkgName, q.name, err)
+func (q *Queue) handleReadError(readPath, qname string) {
 	badName := readPath + BadFileExt
 	var (
 		badn        int
 		badNameBase string
 	)
 retry:
-	err = os.Rename(readPath, badName)
+	err := os.Rename(readPath, badName)
 	if err != nil {
 		// If the bad file already exists, try to add a number suffix to rename
 		// it. Limit retries to not go past ".9" suffix.
@@ -586,10 +604,10 @@ retry:
 			badName = fmt.Sprintf("%s.%d", badNameBase, badn)
 			goto retry
 		}
-		return fmt.Errorf("failed to rename bad file: %w", err)
+		q.logger.Error("failed to rename bad file", slog.Any("err", err))
+		return
 	}
-	log.Printf("%s-%s: renamed %s to %s", pkgName, qname, readPath, badName)
-	return nil
+	q.logger.Info("renamed bad file", slog.String("newName", filepath.Base(badName)))
 }
 
 // loadQueueFromFile loads the given deque with the contents of the next
@@ -620,21 +638,15 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 				}
 			}
 			if err != nil {
-				err = fmt.Errorf("failed to load file %q: %w", readPath, err)
-				err = q.handleReadError(readPath, q.name, err)
-				if err != nil {
-					log.Printf("%s-%s: %s", pkgName, q.name, err)
-				}
+				q.logger.Error("failed to load file", slog.String("path", readPath), slog.Any("err", err))
+				q.handleReadError(readPath, q.name)
 				continue // read next file
 			}
 		}
 		err = os.Remove(readPath)
 		if err != nil {
-			err = fmt.Errorf("failed to remove file %q: %w", readPath, err)
-			err = q.handleReadError(readPath, q.name, err)
-			if err != nil {
-				log.Printf("%s-%s: %s", pkgName, q.name, err)
-			}
+			q.logger.Error("failed to remove file", slog.String("path", readPath), slog.Any("err", err))
+			q.handleReadError(readPath, q.name)
 		}
 	}
 
@@ -682,7 +694,7 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 
 		// If file is corrupt then no way to tell where good items begin.
 		if itemSize < minItemSize || itemSize > maxItemSize {
-			return bytesLoaded, fmt.Errorf("invalid item read size: %d", itemSize)
+			return bytesLoaded, fmt.Errorf("read invalid item size: %d", itemSize)
 		}
 
 		// Read item and put it into the in-mem queue.

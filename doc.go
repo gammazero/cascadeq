@@ -52,6 +52,7 @@
 //   - [WithMinItemSize]: reject items below this byte size (default 0)
 //   - [WithGzip]: enable gzip compression of disk files
 //   - [WithSnapshotInterval]: periodically persist in-memory state when idle
+//   - [WithLogger]: replace the default JSON slog.Logger
 //
 // # Persistence and file format
 //

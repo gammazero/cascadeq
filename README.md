@@ -3,7 +3,7 @@
 [![GoDoc](https://pkg.go.dev/badge/github.com/gammazero/cascadeq)](https://pkg.go.dev/github.com/gammazero/cascadeq)
 [![Build Status](https://github.com/gammazero/cascadeq/actions/workflows/go.yml/badge.svg)](https://github.com/gammazero/cascadeq/actions/workflows/go.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/gammazero/cascadeq)](https://goreportcard.com/report/github.com/gammazero/cascadeq)
-[![codecov](https://codecov.io/gh/gammazero/cascadeq/branch/master/graph/badge.svg)](https://codecov.io/gh/gammazero/cascadeq)
+[![codecov](https://codecov.io/gh/gammazero/cascadeq/branch/main/graph/badge.svg)](https://codecov.io/gh/gammazero/cascadeq)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `cascadeq` is a persistent, disk-backed FIFO queue for `[]byte` items. It runs entirely in memory under normal load and spills to disk only when the configured memory limits are reached, making it fast when the queue is shallow and able to grow to any depth, limited only by disk space. Data in the queue is persisted to disk when the queue is closed and is available for reading when the queue is opened again.
@@ -14,7 +14,7 @@
 - **Disk overflow**: tailQ is flushed to sequentially numbered `.dat` files; files are reloaded into headQ as items are consumed
 - **Persisted**: in-memory state is persisted on `Close`; existing files are picked up automatically on restart
 - **Optional compression**: pass `WithGzip(true)` to compress overflow files
-- **Idle snapshots**: pass `WithSnapshotInterval` to periodically persist in-memory data when the queue is idle, to increase crash safety with minmal throughput cost.
+- **Idle snapshots**: pass `WithSnapshotInterval` to periodically persist in-memory data when the queue is idle, to increase crash safety with minimal throughput cost.
 - **Channel-based API**: consume items with a plain `<-q.Out()` in a `select`
 
 ## Installation
@@ -71,6 +71,7 @@ func main() {
 | `WithMinItemSize(n)` | 0 | Reject items smaller than this |
 | `WithGzip(true)` | disabled | Compress overflow files with gzip |
 | `WithSnapshotInterval(d)` | disabled | Write in-memory state to disk after this much idle time |
+| `WithLogger(l)` | JSON→stderr | Replace the default slog.Logger |
 
 ## Design
 
