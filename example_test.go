@@ -52,10 +52,10 @@ func Example_options() {
 	defer os.RemoveAll(dir)
 
 	q, err := cascadeq.New("example", dir,
-		cascadeq.WithMaxMemory(64*1024),   // 64 KiB in-memory budget
-		cascadeq.WithMaxMemItems(128),     // at most 128 items in memory
-		cascadeq.WithMaxItemSize(4*1024),  // reject items larger than 4 KiB
-		cascadeq.WithGzip(true),           // compress overflow files
+		cascadeq.WithMaxMemory(64*1024),  // 64 KiB in-memory budget
+		cascadeq.WithMaxMemItems(128),    // at most 128 items in memory
+		cascadeq.WithMaxItemSize(4*1024), // reject items larger than 4 KiB
+		cascadeq.WithGzip(true),          // compress overflow files
 	)
 	if err != nil {
 		log.Fatal(err)

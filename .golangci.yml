@@ -1,0 +1,71 @@
+version: "2"
+run:
+  tests: true
+  allow-parallel-runners: false
+output:
+  path-prefix: ""
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bidichk
+    - contextcheck
+    - decorder
+    - durationcheck
+    - errcheck
+    - errorlint
+    #- gochecknoglobals
+    - goconst
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - nilerr
+    - staticcheck
+    - testpackage
+    - unconvert
+    - unparam
+    - unused
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - dupl
+          - errcheck
+          - gochecknoglobals
+          - goconst
+          - gocyclo
+          - gosec
+        path: _test\.go
+      - linters:
+          - testpackage
+        path: export.*_test\.go
+      - linters:
+          - gosec
+          - errcheck
+        path: examples/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 0
+  new: false
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/gammazero)
+      custom-order: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

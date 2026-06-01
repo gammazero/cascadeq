@@ -25,14 +25,11 @@ const (
 	DefaultMaxMemory   = 1024 * 1024
 	DefaultMaxMemItems = 4096
 	DefaultMaxItemSize = 65536
-
-	BadFileExt = ".bad"
-
-	minItemsPerBlock
-	minBlocksPerBuf
 )
 
 const (
+	BadFileExt = ".bad"
+
 	fileExt = ".dat"
 	gzipExt = ".gz"
 	pkgName = "cascadeq"
@@ -570,6 +567,7 @@ func (q *Queue) makeFilePath(fileNum int64) string {
 }
 
 func (q *Queue) handleReadError(readPath, qname string, err error) error {
+	log.Printf("%s-%s: %s", pkgName, q.name, err)
 	badName := readPath + BadFileExt
 	var (
 		badn        int
@@ -588,7 +586,7 @@ retry:
 			badName = fmt.Sprintf("%s.%d", badNameBase, badn)
 			goto retry
 		}
-		return fmt.Errorf("failed to rename bad file: %s", err)
+		return fmt.Errorf("failed to rename bad file: %w", err)
 	}
 	log.Printf("%s-%s: renamed %s to %s", pkgName, qname, readPath, badName)
 	return nil
@@ -622,7 +620,7 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 				}
 			}
 			if err != nil {
-				log.Printf("%s-%s: failed to load file %q: %s", pkgName, q.name, readPath, err)
+				err = fmt.Errorf("failed to load file %q: %w", readPath, err)
 				err = q.handleReadError(readPath, q.name, err)
 				if err != nil {
 					log.Printf("%s-%s: %s", pkgName, q.name, err)
@@ -632,7 +630,7 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 		}
 		err = os.Remove(readPath)
 		if err != nil {
-			log.Printf("%s-%s: failed to remove file %q: %s", pkgName, q.name, readPath, err)
+			err = fmt.Errorf("failed to remove file %q: %w", readPath, err)
 			err = q.handleReadError(readPath, q.name, err)
 			if err != nil {
 				log.Printf("%s-%s: %s", pkgName, q.name, err)
@@ -644,11 +642,11 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 }
 
 func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.Deque[[]byte]) (int, error) {
-	readFile, err := os.Open(readPath)
+	readFile, err := os.Open(readPath) //nolint:gosec
 	if err != nil {
 		return 0, err
 	}
-	defer readFile.Close()
+	defer readFile.Close() //nolint:errcheck
 
 	var (
 		bytesLoaded int
@@ -667,7 +665,7 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 			}
 			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
-		defer gzr.Close()
+		defer gzr.Close() //nolint:errcheck
 		r = gzr
 	}
 
@@ -760,7 +758,7 @@ func (q *Queue) saveToFile(writePath string, memQ *deque.Deque[[]byte], sync boo
 	writePathTmp := writePath + ".tmp"
 	canRetry := true
 retry:
-	writeFile, err := os.OpenFile(writePathTmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	writeFile, err := os.OpenFile(writePathTmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec
 	if err != nil {
 		if os.Remove(writePathTmp) == nil {
 			// Removed unopenable file, so retry once.
@@ -774,9 +772,9 @@ retry:
 	defer func() {
 		if err != nil {
 			if writeFile != nil {
-				writeFile.Close()
+				_ = writeFile.Close()
 			}
-			os.Remove(writePathTmp)
+			_ = os.Remove(writePathTmp)
 		}
 	}()
 
@@ -792,7 +790,7 @@ retry:
 
 	var size int32
 	for item := range memQ.Iter() {
-		dataLen := int32(len(item))
+		dataLen := int32(len(item)) //nolint:gosec
 		err = binary.Write(w, binary.BigEndian, dataLen)
 		if err != nil {
 			return err
@@ -806,7 +804,10 @@ retry:
 		size += dataLen + 4
 	}
 	if gzw != nil {
-		gzw.Close()
+		err = gzw.Close()
+		if err != nil {
+			return err
+		}
 	}
 	err = writer.Flush()
 	if err != nil {
