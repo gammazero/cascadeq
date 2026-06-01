@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -201,6 +203,26 @@ loop:
 	stats := q.Stats()
 	if !stats.Closed || stats.MaxQLen != 0 || stats.MaxQBytes != 0 {
 		t.Fatal("expected closed empty stats")
+	}
+}
+
+func TestAlternativeLogger(t *testing.T) {
+	logOpts := slog.HandlerOptions{
+		AddSource: true,
+		Level:     slog.LevelDebug,
+	}
+	var b strings.Builder
+	handler := slog.NewTextHandler(&b, &logOpts)
+	attrs := []slog.Attr{
+		slog.String("queueName", "my-test-queue"),
+	}
+	logger := slog.New(handler.WithAttrs(attrs))
+
+	makeQueue(t, t.TempDir(), cascadeq.WithLogger(logger))
+	logMsg := b.String()
+	const expect = "queueName=my-test-queue"
+	if !strings.Contains(logMsg, expect) {
+		t.Fatalf("expected to see %q in log message", expect)
 	}
 }
 
