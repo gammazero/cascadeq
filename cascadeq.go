@@ -85,7 +85,7 @@ func WithGzip(enable bool) func(*Queue) {
 }
 
 // WithLogger sets the slog.Logger instance to use for logging. This replaces
-// the cascadeq defaule slog.Logger with a JSON handler that writes to stderr.
+// the cascadeq default slog.Logger with a JSON handler that writes to stderr.
 func WithLogger(logger *slog.Logger) func(*Queue) {
 	return func(q *Queue) {
 		if logger != nil {
@@ -611,7 +611,7 @@ retry:
 }
 
 // loadQueueFromFile loads the given deque with the contents of the next
-// readable file. Errors reading the a file are handled by renaming the file to
+// readable file. Errors reading a file are handled by renaming the file to
 // have a ".bad" extension. If a partial read occurs, then returns with the
 // items that were loaded.
 func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
