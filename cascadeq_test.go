@@ -259,7 +259,7 @@ func TestLoggedErrors(t *testing.T) {
 	defer os.Remove(file.Name())
 
 	rdn := getN(t, maxMemItems/2, 0, q)
-	rdn = getN(t, 1, 16, q)
+	rdn = getN(t, 1, rdn, q)
 
 	logMsg := b.String()
 	t.Log("LOG MSG:", logMsg)
@@ -273,7 +273,7 @@ func TestLoggedErrors(t *testing.T) {
 		t.Fatal("did not find expected content in log:", expect)
 	}
 
-	rdn = getAll(t, 17, q)
+	rdn = getAll(t, rdn, q)
 	if rdn != maxMemItems+1 {
 		t.Fatal("did not read all messages")
 	}
@@ -918,7 +918,7 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 	// Test missing file that was previously see at start.
 	q = makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
 	t.Log("writing 129 items to queue")
-	wrn = putN(t, 129, 0, q)
+	putN(t, 129, 0, q)
 	stats = q.Stats()
 
 	name = filepath.Join(q.Dir(), stats.Files[2])
