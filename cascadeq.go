@@ -498,7 +498,7 @@ func (q *Queue) run() {
 					// file, and not to a tail snapshot, if there are existing
 					// overflow files (tail will not move directly to head) and
 					// the tailQ is full.
-					if q.files.Len() != 0 && tailQ.Len() >= maxItems || tailQBytes >= maxBytes {
+					if q.files.Len() != 0 && (tailQ.Len() >= maxItems || tailQBytes >= maxBytes) {
 						err := q.saveTailToNextFile(&tailQ)
 						if err != nil {
 							q.logger.Error("failed to save tail queue to file", slog.Any("err", err))
