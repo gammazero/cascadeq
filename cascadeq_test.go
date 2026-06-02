@@ -226,6 +226,63 @@ func TestAlternativeLogger(t *testing.T) {
 	}
 }
 
+func TestLoggedErrors(t *testing.T) {
+	const maxMemItems = 32
+	logOpts := slog.HandlerOptions{
+		AddSource: true,
+	}
+	var b strings.Builder
+	logger := slog.New(slog.NewTextHandler(&b, &logOpts))
+
+	q := makeQueue(t, t.TempDir(), cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(time.Second))
+
+	putN(t, maxMemItems+1, 0, q)
+	stats := q.Stats()
+	if len(stats.Files) != 1 {
+		t.Fatal("should have overflow file")
+	}
+	fname := "test-2.dat"
+	dirName := filepath.Join(q.Dir(), fname)
+
+	// Create a directory with a file, so that trying to remove a snapshot by that name fails.
+	err := os.Mkdir(dirName, 0750)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(dirName)
+	subFileName := filepath.Join(dirName, "somefile")
+	file, err := os.Create(subFileName)
+	if err != nil {
+		panic("cannot create temp file")
+	}
+	file.Close()
+	defer os.Remove(file.Name())
+
+	rdn := getN(t, maxMemItems/2, 0, q)
+	rdn = getN(t, 1, rdn, q)
+
+	logMsg := b.String()
+	t.Log("LOG MSG:", logMsg)
+
+	expect := "msg=\"failed to remove snapshot\""
+	if !strings.Contains(logMsg, expect) {
+		t.Fatal("did not find expected content in log:", expect)
+	}
+	expect = "test-2.dat: directory not empty"
+	if !strings.Contains(logMsg, expect) {
+		t.Fatal("did not find expected content in log:", expect)
+	}
+
+	rdn = getAll(t, rdn, q)
+	if rdn != maxMemItems+1 {
+		t.Fatal("did not read all messages")
+	}
+
+	b.Reset()
+
+	t.Log("log:", b.String())
+}
+
 func TestClear(t *testing.T) {
 	const maxMemItems = 32
 	dir := t.TempDir()
@@ -236,7 +293,7 @@ func TestClear(t *testing.T) {
 	putN(t, 65, 0, q)
 	stats := q.Stats()
 	if len(stats.Files) == 0 {
-		t.Fatal("should have save files")
+		t.Fatal("should have overflow files")
 	}
 	if stats.HeadQLen == 0 {
 		t.Fatal("should have items in head queue")
@@ -270,6 +327,58 @@ func TestClear(t *testing.T) {
 	stats = q.Stats()
 	if stats.HeadQLen != 0 || stats.TailQLen != 0 || len(stats.Files) != 0 || stats.HeadQBytes != 0 || stats.TailQBytes != 0 {
 		t.Fatal("queue is not empty")
+	}
+
+	putN(t, 33, 0, q)
+	stats = q.Stats()
+	if len(stats.Files) != 1 {
+		t.Fatal("should have 1 file, have", len(stats.Files))
+	}
+	dirName := filepath.Join(q.Dir(), "test-1.dat")
+	err = os.Remove(dirName)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a directory with a file, so that trying to remove a snapshot by that name fails.
+	err = os.Mkdir(dirName, 0750)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(dirName)
+	subFileName := filepath.Join(dirName, "somefile")
+	file, err := os.Create(subFileName)
+	if err != nil {
+		panic("cannot create temp file")
+	}
+	file.Close()
+	defer os.Remove(file.Name())
+
+	dirName = filepath.Join(q.Dir(), "test-2.dat")
+	err = os.Mkdir(dirName, 0750)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(dirName)
+	subFileName = filepath.Join(dirName, "somefile")
+	file, err = os.Create(subFileName)
+	if err != nil {
+		panic("cannot create temp file")
+	}
+	file.Close()
+	defer os.Remove(file.Name())
+
+	err = q.Clear()
+	if err == nil {
+		t.Fatal("expect error")
+	}
+	expect := "test-1.dat: directory not empty"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatal("did not get expected log message:", expect)
+	}
+	expect = "test-2.dat: directory not empty"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatal("did not get expected log message:", expect)
 	}
 }
 
@@ -764,6 +873,7 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 		t.Fatalf("there should be %d files remaining, got %d", expect, len(stats.Files))
 	}
 
+	t.Log("reading 33 item from queue")
 	rdn = getN(t, 33, rdn, q)
 	stats = q.Stats()
 	if stats.HeadQLen != 0 || stats.TailQLen != 0 || len(stats.Files) != 0 {
@@ -803,6 +913,34 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 	err = q.Close()
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// Test missing file that was previously see at start.
+	q = makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
+	t.Log("writing 129 items to queue")
+	putN(t, 129, 0, q)
+	stats = q.Stats()
+
+	name = filepath.Join(q.Dir(), stats.Files[2])
+	os.Remove(name)
+	t.Log("removed file", name)
+
+	t.Log("reading 48 item from queue, loading from files 0, 1, 2.")
+	getN(t, 48, 0, q)
+	stats = q.Stats()
+	// Truncated file removed on last read when read-from queue emptied.
+	expect = 3
+	if len(stats.Files) != expect {
+		t.Fatalf("there should be %d files remaining, got %d", expect, len(stats.Files))
+	}
+	t.Log("reading remaining item from queue")
+	rdn = getAll(t, 64, q)
+	stats = q.Stats()
+	if stats.TailQLen != 0 || stats.HeadQLen != 0 {
+		t.Fatal("queue not mepty")
+	}
+	if rdn != 129 {
+		t.Fatal("expected to have read up to message 129")
 	}
 }
 
@@ -1240,11 +1378,12 @@ func TestZeroLength(t *testing.T) {
 }
 
 func TestSnapshot(t *testing.T) {
+	const snapInterval = time.Second
 	const maxMemItems = 32
 	dir := t.TempDir()
 
 	synctest.Test(t, func(t *testing.T) {
-		q := makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(time.Second))
+		q := makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
 		wrn := putN(t, 129, 0, q)
 		time.Sleep(2 * time.Second)
 
@@ -1265,7 +1404,7 @@ func TestSnapshot(t *testing.T) {
 			t.Fatal("expected 2 save files, got", len(entries))
 		}
 
-		q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(time.Second))
+		q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
 		rdn = getAll(t, rdn, q)
 		if rdn != wrn {
 			t.Fatalf("did not read expected value: rdn=%d != wrn=%d", rdn, wrn)
@@ -1280,7 +1419,7 @@ func TestSnapshot(t *testing.T) {
 		}
 
 		wrn = putN(t, 30, 0, q)
-		time.Sleep(2 * time.Second)
+		time.Sleep(2 * snapInterval)
 		rdn = getN(t, 10, 0, q)
 		err = q.Close()
 		if err != nil {
@@ -1288,7 +1427,7 @@ func TestSnapshot(t *testing.T) {
 		}
 
 		// Make sure that no items are redelivered after reading in snapshots.
-		q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(time.Second))
+		q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
 		rdn = getAll(t, rdn, q)
 		if rdn != wrn {
 			t.Fatal("did not read all items")
@@ -1309,7 +1448,7 @@ func TestSnapshot(t *testing.T) {
 			t.Fatal("tailQ should be full")
 		}
 		// Wait for snapshot.
-		time.Sleep(2 * time.Second)
+		time.Sleep(2 * snapInterval)
 		// Check that overflow was created and not snapshot.
 		stats = q.Stats()
 		if len(stats.Files) != 2 {
@@ -1331,6 +1470,77 @@ func TestSnapshot(t *testing.T) {
 		err = q.Close()
 		if err != nil {
 			t.Fatal(err)
+		}
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		logOpts := slog.HandlerOptions{
+			AddSource: true,
+		}
+		var b strings.Builder
+		logger := slog.New(slog.NewTextHandler(&b, &logOpts))
+
+		q := makeQueue(t, t.TempDir(), cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
+
+		putN(t, maxMemItems+(maxMemItems/2), 0, q)
+
+		dirName := filepath.Join(q.Dir(), "test-1.dat")
+		err := os.Remove(dirName)
+		if err != nil {
+			panic(err)
+		}
+		err = os.Mkdir(dirName, 0750)
+		if err != nil {
+			panic(err)
+		}
+		defer os.Remove(dirName)
+		subFileName := filepath.Join(dirName, "somefile")
+		file, err := os.Create(subFileName)
+		if err != nil {
+			panic("cannot create temp file")
+		}
+		file.Close()
+		defer os.Remove(file.Name())
+
+		dirName = filepath.Join(q.Dir(), "test-2.dat")
+		err = os.Mkdir(dirName, 0750)
+		if err != nil {
+			panic(err)
+		}
+		defer os.Remove(dirName)
+		subFileName = filepath.Join(dirName, "somefile")
+		file, err = os.Create(subFileName)
+		if err != nil {
+			panic("cannot create temp file")
+		}
+		file.Close()
+		defer os.Remove(file.Name())
+
+		dirName = filepath.Join(q.Dir(), "test-0.dat")
+		err = os.Mkdir(dirName, 0750)
+		if err != nil {
+			panic(err)
+		}
+		defer os.Remove(dirName)
+		subFileName = filepath.Join(dirName, "somefile")
+		file, err = os.Create(subFileName)
+		if err != nil {
+			panic("cannot create temp file")
+		}
+		file.Close()
+		defer os.Remove(file.Name())
+
+		// Wait for snapshot.
+		time.Sleep(2 * snapInterval)
+
+		logMsg := b.String()
+		expect := "msg=\"failed to save tail queue to file\""
+		if !strings.Contains(logMsg, expect) {
+			t.Fatal("log did not contain expected message:", expect)
+		}
+		expect = "msg=\"failed to save snapshot to file\""
+		if !strings.Contains(logMsg, expect) {
+			t.Fatal("log did not contain expected message:", expect)
 		}
 	})
 }
