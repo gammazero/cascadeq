@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gammazero/deque"
+	"github.com/gammazero/fsutil"
 )
 
 const (
@@ -149,13 +150,22 @@ func WithSnapshotInterval(d time.Duration) func(*Queue) {
 
 // New creates a new file-backed FIFO queue instance.
 func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
+	var err error
+	dir, err = fsutil.ExpandHome(filepath.Clean(dir))
+	if err != nil {
+		return nil, err
+	}
+	if err = fsutil.DirWritable(dir); err != nil {
+		return nil, err
+	}
+
 	q := &Queue{
 		maxMemBytes: DefaultMaxMemory,
 		maxMemItems: DefaultMaxMemItems,
 		maxItemSize: DefaultMaxItemSize,
 
 		name:         name,
-		dir:          filepath.Clean(dir),
+		dir:          dir,
 		done:         make(chan struct{}),
 		input:        make(chan []byte),
 		inputRsp:     make(chan error, 1),
@@ -182,7 +192,7 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 	}
 
 	q.logger.Debug("starting", slog.Bool("gzip", q.gzip), slog.Bool("snapshots", q.snapInterval != 0))
-	err := q.readQueueDir()
+	err = q.readQueueDir()
 	if err != nil {
 		return nil, err
 	}

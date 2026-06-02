@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gammazero/cascadeq"
+	"github.com/gammazero/fsutil"
 )
 
 func TestBadSaveDir(t *testing.T) {
@@ -41,8 +42,48 @@ func TestBadSaveDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ok, err := fsutil.DirExists(q.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected", q.Dir(), "to exist")
+	}
 	if err = q.Close(); err != nil {
 		t.Fatal(err)
+	}
+
+	q, err = cascadeq.New("test", "~not-a-user-0932488/foo")
+	if err == nil {
+		t.Fatal("expected error - unexpandable user")
+	}
+	expect := "cannot expand user-specific home dir"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatalf("expected error %q got %q", expect, err)
+	}
+
+	q, err = cascadeq.New("test", filepath.Join(dir, "no-such-dir", "my-queue-dir"))
+	if err == nil {
+		t.Fatal("expected error - no such directory")
+	}
+	expect = "no such file or directory"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatalf("expected error %q got %q", expect, err)
+	}
+
+	wrOnlyDir := filepath.Join(dir, "wronly")
+	err = os.Mkdir(wrOnlyDir, 0300)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(wrOnlyDir)
+	q, err = cascadeq.New("test", wrOnlyDir)
+	if err == nil {
+		t.Fatal("expected error - permission denied")
+	}
+	expect = "permission denied"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatalf("expected error %q got %q", expect, err)
 	}
 }
 
@@ -779,9 +820,6 @@ func TestAllIOLoop(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatal("expected 2 save files, have", len(entries))
 	}
-	for i, ent := range entries {
-		t.Logf("File %d: %s", i, ent.Name())
-	}
 
 	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
 
@@ -1057,18 +1095,7 @@ func TestCorruptedFiles(t *testing.T) {
 	}
 	// Check that bad file was written with .bad.1 to avoid existing .bad file.
 	rename1 := rename + ".1"
-	entries, err := os.ReadDir(q.Dir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, ent := range entries {
-		if ent.Name() == filepath.Base(rename1) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !fsutil.FileExists(rename1) {
 		t.Fatal("Did not find", rename1)
 	}
 	os.Remove(rename1)
@@ -1106,7 +1133,7 @@ func TestCorruptedFiles(t *testing.T) {
 	if len(stats.Files) != 0 {
 		t.Fatal("expected all overflow files to be gone")
 	}
-	entries, err = os.ReadDir(q.Dir())
+	entries, err := os.ReadDir(q.Dir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1154,14 +1181,8 @@ func TestCorruptedFiles(t *testing.T) {
 	}
 	// Check that bad file was written with .bad.1 to avoid existing .bad file.
 	rename10 := rename + ".10"
-	entries, err = os.ReadDir(q.Dir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ent := range entries {
-		if ent.Name() == filepath.Base(rename10) {
-			t.Fatal("should not have bad file \".bad.10\"")
-		}
+	if fsutil.FileExists(rename10) {
+		t.Fatal("should not have bad file \".bad.10\"")
 	}
 }
 
