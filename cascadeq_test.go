@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -203,6 +204,46 @@ loop:
 	stats := q.Stats()
 	if !stats.Closed || stats.MaxQLen != 0 || stats.MaxQBytes != 0 {
 		t.Fatal("expected closed empty stats")
+	}
+}
+
+// TestConcurrentPut exercises Put from many goroutines at once. Each caller
+// must receive its own result, and every enqueued item must come back out
+// exactly once. Run with -race to catch concurrent access to queue state.
+func TestConcurrentPut(t *testing.T) {
+	const (
+		writers     = 8
+		perWriter   = 250
+		maxMemItems = 256 // small enough to force overflow to disk
+	)
+	total := writers * perWriter
+	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
+
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Go(func() {
+			for i := range perWriter {
+				if err := q.Put(fmt.Appendf(nil, "%02d-%05d", w, i)); err != nil {
+					t.Errorf("writer %d item %d: %v", w, i, err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	seen := make(map[string]struct{}, total)
+	for len(seen) < total {
+		select {
+		case item := <-q.Out():
+			s := string(item)
+			if _, dup := seen[s]; dup {
+				t.Fatalf("item %q returned more than once", s)
+			}
+			seen[s] = struct{}{}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out: read %d of %d items", len(seen), total)
+		}
 	}
 }
 

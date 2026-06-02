@@ -38,6 +38,14 @@ const (
 // ErrClosed is returned when I/O is attempted on a closed Queue.
 var ErrClosed = errors.New("closed")
 
+// putReq carries an item to enqueue together with the channel on which the
+// event loop sends its result. Each Put supplies its own response channel so
+// that concurrent callers cannot receive each other's results.
+type putReq struct {
+	item []byte
+	rsp  chan error
+}
+
 // Queue implements a filesystem backed FIFO queue.
 type Queue struct {
 	maxMemItems int
@@ -56,8 +64,7 @@ type Queue struct {
 
 	done         chan struct{}
 	empty        chan struct{}
-	input        chan []byte
-	inputRsp     chan error
+	input        chan putReq
 	output       chan []byte
 	clearReqChan chan chan error
 	statsReqChan chan chan Stats
@@ -157,8 +164,7 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 		name:         name,
 		dir:          filepath.Clean(dir),
 		done:         make(chan struct{}),
-		input:        make(chan []byte),
-		inputRsp:     make(chan error, 1),
+		input:        make(chan putReq),
 		empty:        make(chan struct{}),
 		output:       make(chan []byte),
 		clearReqChan: make(chan chan error),
@@ -266,8 +272,9 @@ func (q *Queue) Put(item []byte) (err error) {
 		return fmt.Errorf("invalid item size (%d) min=%d max=%d", dataLen, q.minItemSize, q.maxItemSize)
 	}
 
-	q.input <- item
-	return <-q.inputRsp
+	req := putReq{item: item, rsp: make(chan error, 1)}
+	q.input <- req
+	return <-req.rsp
 }
 
 // Stats retrieves information about queue internal data.
@@ -333,10 +340,11 @@ func (q *Queue) run() {
 
 	for {
 		select {
-		case item, open := <-q.input:
+		case req, open := <-q.input:
 			if !open {
 				return
 			}
+			item := req.item
 			snapCount++
 			if q.files.Len() == 0 && tailQ.Len() == 0 {
 				if headQ.Len() < maxItems && headQBytes < maxBytes {
@@ -351,13 +359,13 @@ func (q *Queue) run() {
 					tailQ.PushBack(item)
 					tailQBytes += len(item)
 				}
-				q.inputRsp <- nil
+				req.rsp <- nil
 				continue
 			}
 			if tailQ.Len() < maxItems && tailQBytes < maxBytes {
 				tailQ.PushBack(item)
 				tailQBytes += len(item)
-				q.inputRsp <- nil
+				req.rsp <- nil
 				continue
 			}
 			// Getting here means that tailQ is full, and headQ cannot be empty
@@ -382,7 +390,7 @@ func (q *Queue) run() {
 				// file. This will overwrite any existing tailQ snapshot.
 				err := q.saveTailToNextFile(&tailQ)
 				if err != nil {
-					q.inputRsp <- fmt.Errorf("failed saving queue to file: %w", err)
+					req.rsp <- fmt.Errorf("failed saving queue to file: %w", err)
 					continue
 				}
 				tailQBytes = 0
@@ -394,7 +402,7 @@ func (q *Queue) run() {
 			// always put the incoming item on tailQ.
 			tailQ.PushBack(item)
 			tailQBytes += len(item)
-			q.inputRsp <- nil
+			req.rsp <- nil
 
 		case output <- next:
 			snapCount++
