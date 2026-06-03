@@ -53,7 +53,7 @@ func TestBadSaveDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q, err = cascadeq.New("test", "~not-a-user-0932488/foo")
+	_, err = cascadeq.New("test", "~not-a-user-0932488/foo")
 	if err == nil {
 		t.Fatal("expected error - unexpandable user")
 	}
@@ -62,7 +62,7 @@ func TestBadSaveDir(t *testing.T) {
 		t.Fatalf("expected error %q got %q", expect, err)
 	}
 
-	q, err = cascadeq.New("test", filepath.Join(dir, "no-such-dir", "my-queue-dir"))
+	_, err = cascadeq.New("test", filepath.Join(dir, "no-such-dir", "my-queue-dir"))
 	if err == nil {
 		t.Fatal("expected error - no such directory")
 	}
@@ -77,7 +77,7 @@ func TestBadSaveDir(t *testing.T) {
 		panic(err)
 	}
 	defer os.Remove(wrOnlyDir)
-	q, err = cascadeq.New("test", wrOnlyDir)
+	_, err = cascadeq.New("test", wrOnlyDir)
 	if err == nil {
 		t.Fatal("expected error - permission denied")
 	}
