@@ -1551,8 +1551,10 @@ func TestSnapshot(t *testing.T) {
 		file.Close()
 		defer os.Remove(file.Name())
 
-		// Wait for snapshot.
+		// Wait for snapshot, then for the queue goroutine to become idle so
+		// its log writes are ordered before the read below.
 		time.Sleep(2 * snapInterval)
+		synctest.Wait()
 
 		logMsg := b.String()
 		expect := "msg=\"failed to save tail queue to file\""
