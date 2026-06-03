@@ -86,7 +86,7 @@ func WithGzip(enable bool) func(*Queue) {
 }
 
 // WithLogger sets the slog.Logger instance to use for logging. This replaces
-// the cascadeq defaule slog.Logger with a JSON handler that writes to stderr.
+// the cascadeq default slog.Logger with a JSON handler that writes to stderr.
 func WithLogger(logger *slog.Logger) func(*Queue) {
 	return func(q *Queue) {
 		if logger != nil {
@@ -508,7 +508,7 @@ func (q *Queue) run() {
 					// file, and not to a tail snapshot, if there are existing
 					// overflow files (tail will not move directly to head) and
 					// the tailQ is full.
-					if q.files.Len() != 0 && tailQ.Len() >= maxItems || tailQBytes >= maxBytes {
+					if q.files.Len() != 0 && (tailQ.Len() >= maxItems || tailQBytes >= maxBytes) {
 						err := q.saveTailToNextFile(&tailQ)
 						if err != nil {
 							q.logger.Error("failed to save tail queue to file", slog.Any("err", err))
@@ -621,7 +621,7 @@ retry:
 }
 
 // loadQueueFromFile loads the given deque with the contents of the next
-// readable file. Errors reading the a file are handled by renaming the file to
+// readable file. Errors reading a file are handled by renaming the file to
 // have a ".bad" extension. If a partial read occurs, then returns with the
 // items that were loaded.
 func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
