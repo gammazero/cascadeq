@@ -3,7 +3,7 @@
 [![GoDoc](https://pkg.go.dev/badge/github.com/gammazero/cascadeq)](https://pkg.go.dev/github.com/gammazero/cascadeq)
 [![Build Status](https://github.com/gammazero/cascadeq/actions/workflows/go.yml/badge.svg)](https://github.com/gammazero/cascadeq/actions/workflows/go.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/gammazero/cascadeq)](https://goreportcard.com/report/github.com/gammazero/cascadeq)
-[![codecov](https://codecov.io/gh/gammazero/cascadeq/branch/main/graph/badge.svg)](https://codecov.io/gh/gammazero/cascadeq)
+[![codecov](https://codecov.io/gh/gammazero/cascadeq/graph/badge.svg?token=CTXB2UJ7U7)](https://codecov.io/gh/gammazero/cascadeq)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `cascadeq` (cascade-queue) is a persistent, disk-backed FIFO queue for `[]byte` items. It runs entirely in memory under normal load and spills to disk only when the configured memory limits are reached, making it fast when the queue is shallow and able to grow to any depth, limited only by disk space. Data in the queue is persisted to disk when the queue is closed and is available for reading when the queue is opened again.
