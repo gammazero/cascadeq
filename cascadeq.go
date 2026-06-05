@@ -39,6 +39,10 @@ const (
 // ErrClosed is returned when I/O is attempted on a closed Queue.
 var ErrClosed = errors.New("closed")
 
+var rspErrPool = sync.Pool{
+	New: func() any { return make(chan error, 1) },
+}
+
 // putReq carries an item to enqueue together with the channel on which the
 // event loop sends its result. Each Put supplies its own response channel so
 // that concurrent callers cannot receive each other's results.
@@ -218,9 +222,11 @@ func (q *Queue) Clear() error {
 		return ErrClosed
 	}
 
-	rspChan := make(chan error, 1)
-	q.clearReqChan <- rspChan
-	return <-rspChan
+	rsp := rspErrPool.Get().(chan error)
+	q.clearReqChan <- rsp
+	err := <-rsp
+	rspErrPool.Put(rsp)
+	return err
 }
 
 // Close stops the queue's internal goroutine and prevents any more input or
@@ -283,9 +289,11 @@ func (q *Queue) Put(item []byte) (err error) {
 		return fmt.Errorf("invalid item size (%d) min=%d max=%d", dataLen, q.minItemSize, q.maxItemSize)
 	}
 
-	req := putReq{item: item, rsp: make(chan error, 1)}
-	q.input <- req
-	return <-req.rsp
+	rsp := rspErrPool.Get().(chan error)
+	q.input <- putReq{item: item, rsp: rsp}
+	err = <-rsp
+	rspErrPool.Put(rsp)
+	return err
 }
 
 // Stats retrieves information about queue internal data.
