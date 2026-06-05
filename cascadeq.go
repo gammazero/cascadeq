@@ -39,10 +39,6 @@ const (
 // ErrClosed is returned when I/O is attempted on a closed Queue.
 var ErrClosed = errors.New("closed")
 
-var rspErrPool = sync.Pool{
-	New: func() any { return make(chan error, 1) },
-}
-
 // putReq carries an item to enqueue together with the channel on which the
 // event loop sends its result. Each Put supplies its own response channel so
 // that concurrent callers cannot receive each other's results.
@@ -79,6 +75,9 @@ type Queue struct {
 	output       chan []byte
 	clearReqChan chan chan error
 	statsReqChan chan chan Stats
+
+	rspErrPool sync.Pool
+	rspNPool   sync.Pool
 
 	files  deque.Deque[int64]
 	closed bool
@@ -192,6 +191,13 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 		output:       make(chan []byte),
 		clearReqChan: make(chan chan error),
 		statsReqChan: make(chan chan Stats),
+
+		rspErrPool: sync.Pool{
+			New: func() any { return make(chan error, 1) },
+		},
+		rspNPool: sync.Pool{
+			New: func() any { return make(chan int, 1) },
+		},
 	}
 	for _, opt := range options {
 		opt(q)
@@ -230,10 +236,10 @@ func (q *Queue) Clear() error {
 		return ErrClosed
 	}
 
-	rsp := rspErrPool.Get().(chan error)
+	rsp := q.rspErrPool.Get().(chan error)
 	q.clearReqChan <- rsp
 	err := <-rsp
-	rspErrPool.Put(rsp)
+	q.rspErrPool.Put(rsp)
 	return err
 }
 
@@ -297,10 +303,10 @@ func (q *Queue) Put(item []byte) (err error) {
 		return fmt.Errorf("invalid item size (%d) min=%d max=%d", dataLen, q.minItemSize, q.maxItemSize)
 	}
 
-	rsp := rspErrPool.Get().(chan error)
+	rsp := q.rspErrPool.Get().(chan error)
 	q.input <- putReq{item: item, rsp: rsp}
 	err = <-rsp
-	rspErrPool.Put(rsp)
+	q.rspErrPool.Put(rsp)
 	return err
 }
 
@@ -322,10 +328,10 @@ func (q *Queue) PutBatch(items [][]byte) error {
 		return ErrClosed
 	}
 
-	rsp := rspErrPool.Get().(chan error)
+	rsp := q.rspErrPool.Get().(chan error)
 	q.input <- putReq{items: items, rsp: rsp}
 	err := <-rsp
-	rspErrPool.Put(rsp)
+	q.rspErrPool.Put(rsp)
 	return err
 }
 
@@ -344,9 +350,11 @@ func (q *Queue) Drain(dst [][]byte) int {
 		return 0
 	}
 
-	rsp := make(chan int, 1)
+	rsp := q.rspNPool.Get().(chan int)
 	q.drainReqChan <- drainReq{dst: dst, rsp: rsp}
-	return <-rsp
+	n := <-rsp
+	q.rspNPool.Put(rsp)
+	return n
 }
 
 // Stats retrieves information about queue internal data.
@@ -409,7 +417,6 @@ func (q *Queue) run() {
 	}
 
 	putItem := func(item []byte) error {
-		snapCount++
 		if q.files.Len() == 0 && tailQ.Len() == 0 {
 			if headQ.Len() < maxItems && headQBytes < maxBytes {
 				headQ.PushBack(item)
@@ -495,6 +502,7 @@ func (q *Queue) run() {
 			if !open {
 				return
 			}
+			snapCount++
 			if req.items == nil {
 				// Single-item Put path (unchanged).
 				req.rsp <- putItem(req.item)
@@ -528,7 +536,6 @@ func (q *Queue) run() {
 			}
 
 		case req := <-q.drainReqChan:
-			snapCount++
 			space := len(req.dst)
 			var dstFull bool
 			var n int
@@ -551,6 +558,7 @@ func (q *Queue) run() {
 					break drainLoop
 				}
 			}
+			snapCount += n
 			req.rsp <- n
 
 		case errChan := <-q.clearReqChan:
