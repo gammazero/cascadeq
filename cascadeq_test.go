@@ -3,6 +3,7 @@ package cascadeq_test
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -285,6 +286,77 @@ func TestConcurrentPut(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatalf("timed out: read %d of %d items", len(seen), total)
 		}
+	}
+}
+
+func TestPutBatch(t *testing.T) {
+	const maxMemItems = 32
+	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
+
+	// nil and empty batch are no-ops.
+	if err := q.PutBatch(nil); err != nil {
+		t.Fatal("PutBatch(nil) should return nil, got:", err)
+	}
+	if err := q.PutBatch([][]byte{}); err != nil {
+		t.Fatal("PutBatch(empty) should return nil, got:", err)
+	}
+
+	// Basic ordering guarantee.
+	batch := [][]byte{[]byte("alpha"), []byte("beta"), []byte("gamma")}
+	if err := q.PutBatch(batch); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range batch {
+		got := <-q.Out()
+		if !bytes.Equal(got, want) {
+			t.Fatalf("item %d: got %q, want %q", i, got, want)
+		}
+	}
+
+	// Error on invalid item mid-batch: items before it are enqueued, after are not.
+	oversized := make([]byte, cascadeq.DefaultMaxItemSize+1)
+	mixed := [][]byte{[]byte("ok1"), oversized, []byte("ok2")}
+	err := q.PutBatch(mixed)
+	if err == nil {
+		t.Fatal("expected error for oversize item")
+	}
+	got := <-q.Out()
+	if !bytes.Equal(got, []byte("ok1")) {
+		t.Fatalf("got %q, want %q", got, "ok1")
+	}
+	select {
+	case <-q.Out():
+		t.Fatal("ok2 should not have been enqueued after error")
+	case <-q.Empty():
+	}
+
+	// Batch that causes overflow to disk preserves order.
+	overflow := make([][]byte, maxMemItems+1) // 33 items
+	for i := range overflow {
+		overflow[i] = []byte(fmt.Sprintf("%06d", i))
+	}
+	if err := q.PutBatch(overflow); err != nil {
+		t.Fatal(err)
+	}
+	stats := q.Stats()
+	if len(stats.Files) == 0 {
+		t.Fatal("expected at least one overflow file")
+	}
+	for i, want := range overflow {
+		got := <-q.Out()
+		if !bytes.Equal(got, want) {
+			t.Fatalf("overflow item %d: got %q, want %q", i, got, want)
+		}
+	}
+
+	// ErrClosed after Close.
+	q2, err := cascadeq.New("test2", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q2.Close()
+	if err := q2.PutBatch([][]byte{[]byte("x")}); !errors.Is(err, cascadeq.ErrClosed) {
+		t.Fatalf("expected ErrClosed, got %v", err)
 	}
 }
 
@@ -1359,6 +1431,7 @@ func BenchmarkStress(b *testing.B) {
 
 	var rdn, wrn int
 
+	b.ReportAllocs()
 	b.ResetTimer()
 
 	for range b.N {
@@ -1801,6 +1874,7 @@ func BenchmarkPut1048576(b *testing.B) {
 	benchmarkPut(1048576, b)
 }
 func benchmarkPut(size int64, b *testing.B) {
+	b.ReportAllocs()
 	qName := "bench_put" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
 	tmpDir := b.TempDir()
 	q, err := cascadeq.New(qName, tmpDir, cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(int(size)), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
@@ -1849,6 +1923,7 @@ func BenchmarkGet1048576(b *testing.B) {
 }
 
 func benchmarkGet(size int64, b *testing.B) {
+	b.ReportAllocs()
 	b.StopTimer()
 	qName := "bench_get" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
 	tmpDir := b.TempDir()
