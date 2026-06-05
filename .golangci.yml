@@ -14,7 +14,7 @@ linters:
     - durationcheck
     - errcheck
     - errorlint
-    #- gochecknoglobals
+    - gochecknoglobals
     - goconst
     - gosec
     - govet

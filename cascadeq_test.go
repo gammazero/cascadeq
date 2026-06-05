@@ -89,6 +89,55 @@ func TestBadSaveDir(t *testing.T) {
 	}
 }
 
+func TestDisappearingSaveDir(t *testing.T) {
+	dir := t.TempDir()
+	disappearDir := filepath.Join(dir, "disappear")
+
+	// Test save directory removed after startup/
+	q, err := cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.Remove(disappearDir)
+	if err != nil {
+		panic(err)
+	}
+	putN(t, 32, 0, q) // fill memory
+	if err = q.Put([]byte("hello")); err == nil {
+		t.Fatal("expected error")
+	}
+	if err = q.Close(); err == nil {
+		t.Fatal("expected error")
+	}
+
+	// Test save directory removed between save and load.
+	disappearDir = filepath.Join(dir, "disappear2")
+	q, err = cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	putN(t, 55, 0, q) // write multiple files
+	if err = q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err = cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	err = os.RemoveAll(disappearDir)
+	if err != nil {
+		panic(err)
+	}
+	getN(t, 16, 0, q) // trigger reading next file
+	select {
+	case <-q.Out():
+		t.Fatal("should not have read more items")
+	case <-q.Empty():
+		t.Log("ok, queue is empty")
+	}
+}
+
 func TestBadSizeLimits(t *testing.T) {
 	_, err := cascadeq.New("test", "", cascadeq.WithMinItemSize(10), cascadeq.WithMaxItemSize(2))
 	if err == nil {
@@ -301,6 +350,27 @@ func TestPutBatch(t *testing.T) {
 		t.Fatal("PutBatch(empty) should return nil, got:", err)
 	}
 
+	single := [][]byte{[]byte("hello")}
+	if err := q.PutBatch(single); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	for done := false; !done; {
+		select {
+		case got := <-q.Out():
+			count++
+			if count == 2 {
+				t.Fatal("got more than 1 item")
+			}
+			want := single[0]
+			if !bytes.Equal(got, want) {
+				t.Fatalf("item 0: got %q, want %q", got, want)
+			}
+		case <-q.Empty():
+			done = true
+		}
+	}
+
 	// Basic ordering guarantee.
 	batch := [][]byte{[]byte("alpha"), []byte("beta"), []byte("gamma")}
 	if err := q.PutBatch(batch); err != nil {
@@ -355,8 +425,135 @@ func TestPutBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	q2.Close()
-	if err := q2.PutBatch([][]byte{[]byte("x")}); !errors.Is(err, cascadeq.ErrClosed) {
+	if err := q2.PutBatch([][]byte{[]byte("x"), []byte("y")}); !errors.Is(err, cascadeq.ErrClosed) {
 		t.Fatalf("expected ErrClosed, got %v", err)
+	}
+}
+
+func TestDrain(t *testing.T) {
+	const maxMemItems = 32
+	maxQ := maxMemItems / 2 // 16: items per half-queue
+
+	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
+
+	// Drain on empty queue returns 0.
+	if n := q.Drain(make([][]byte, 4)); n != 0 {
+		t.Fatalf("drain on empty queue: got %d, want 0", n)
+	}
+
+	// Drain with nil/empty dst returns 0 and does not consume items.
+	if err := q.Put([]byte("probe")); err != nil {
+		t.Fatal(err)
+	}
+	if n := q.Drain(nil); n != 0 {
+		t.Fatalf("drain(nil): got %d, want 0", n)
+	}
+	if n := q.Drain([][]byte{}); n != 0 {
+		t.Fatalf("drain(empty): got %d, want 0", n)
+	}
+	<-q.Out() // consume the probe item
+
+	// Drain fills up to len(dst) items and preserves order.
+	for i := range 6 {
+		if err := q.Put([]byte(fmt.Sprintf("%06d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst := make([][]byte, 4)
+	if n := q.Drain(dst); n != 4 {
+		t.Fatalf("drain 6 items into dst[4]: got %d, want 4", n)
+	}
+	for i, got := range dst {
+		want := fmt.Sprintf("%06d", i)
+		if string(got) != want {
+			t.Fatalf("item %d: got %q, want %q", i, got, want)
+		}
+	}
+	// 2 remain.
+	dst2 := make([][]byte, 4)
+	if n := q.Drain(dst2); n != 2 {
+		t.Fatalf("drain remainder: got %d, want 2", n)
+	}
+
+	// After Drain, Out() still works (output channel not broken).
+	for i := range 3 {
+		if err := q.Put([]byte(fmt.Sprintf("%06d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := <-q.Out()
+	if string(got) != "000000" {
+		t.Fatalf("Out() after Drain: got %q, want %q", got, "000000")
+	}
+	q.Drain(make([][]byte, 8)) // drain the rest
+
+	// Drain triggers tailQ→headQ promotion.
+	// With maxQ=16: items 0-15 fill headQ, item 16 goes to tailQ.
+	for i := range maxQ + 1 {
+		if err := q.Put([]byte(fmt.Sprintf("%06d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Drain all of headQ.
+	headBuf := make([][]byte, maxQ)
+	if n := q.Drain(headBuf); n != maxQ {
+		t.Fatalf("drain headQ: got %d, want %d", n, maxQ)
+	}
+	// Next drain must find the tailQ item (promotion).
+	one := make([][]byte, 4)
+	if n := q.Drain(one); n != 1 {
+		t.Fatalf("after tailQ promotion: got %d, want 1", n)
+	}
+	if string(one[0]) != fmt.Sprintf("%06d", maxQ) {
+		t.Fatalf("promoted item: got %q, want %q", one[0], fmt.Sprintf("%06d", maxQ))
+	}
+
+	if err := q.Clear(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain triggers file-load promotion.
+	// 33 items: headQ=0-15, file-1=16-31, tailQ=32.
+	for i := range maxMemItems + 1 {
+		if err := q.Put([]byte(fmt.Sprintf("%06d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats := q.Stats()
+	if len(stats.Files) != 1 {
+		t.Fatalf("setup: want 1 overflow file, got %d", len(stats.Files))
+	}
+	// Drain headQ (0-15); post-promote should load file-1 into headQ.
+	h1 := make([][]byte, maxQ)
+	if n := q.Drain(h1); n != maxQ {
+		t.Fatalf("first drain: got %d, want %d", n, maxQ)
+	}
+	// Drain from file-loaded headQ (16-31).
+	h2 := make([][]byte, maxQ)
+	if n := q.Drain(h2); n != maxQ {
+		t.Fatalf("file-load drain: got %d, want %d", n, maxQ)
+	}
+	for i, got := range h2 {
+		want := fmt.Sprintf("%06d", maxQ+i)
+		if string(got) != want {
+			t.Fatalf("file item %d: got %q, want %q", i, got, want)
+		}
+	}
+	// 1 item remaining (item 32 in tailQ, promoted to headQ by post-promote).
+	rem := make([][]byte, 4)
+	if n := q.Drain(rem); n != 1 {
+		t.Fatalf("remainder: got %d, want 1", n)
+	}
+
+	// Drain returns 0 after Close.
+	q2, err := cascadeq.New("test2", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q2.Put([]byte("x"))
+	q2.Close()
+	if n := q2.Drain(make([][]byte, 4)); n != 0 {
+		t.Fatalf("drain after close: got %d, want 0", n)
 	}
 }
 
@@ -1615,8 +1812,7 @@ func TestSnapshot(t *testing.T) {
 		var b strings.Builder
 		logger := slog.New(slog.NewTextHandler(&b, &logOpts))
 
-		q := makeQueue(t, t.TempDir(), cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
-
+		q := makeQueue(t, dir, cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
 		putN(t, maxMemItems+(maxMemItems/2), 0, q)
 
 		dirName := filepath.Join(q.Dir(), "test-1.dat")
@@ -1940,6 +2136,35 @@ func benchmarkGet(size int64, b *testing.B) {
 
 	for range b.N {
 		<-q.Out()
+	}
+	q.Close()
+}
+
+func BenchmarkDrain1(b *testing.B)   { benchmarkDrain(1, b) }
+func BenchmarkDrain4(b *testing.B)   { benchmarkDrain(4, b) }
+func BenchmarkDrain16(b *testing.B)  { benchmarkDrain(16, b) }
+func BenchmarkDrain64(b *testing.B)  { benchmarkDrain(64, b) }
+func BenchmarkDrain256(b *testing.B) { benchmarkDrain(256, b) }
+
+func benchmarkDrain(batchSize int, b *testing.B) {
+	const itemSize = 256
+	b.ReportAllocs()
+	b.StopTimer()
+	qName := "bench_drain" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
+	q, err := cascadeq.New(qName, b.TempDir(), cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(itemSize), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
+	if err != nil {
+		b.Fatal(err)
+	}
+	data := make([]byte, itemSize)
+	dst := make([][]byte, batchSize)
+	for range b.N * batchSize {
+		q.Put(data)
+	}
+	b.SetBytes(int64(itemSize * batchSize))
+	b.StartTimer()
+
+	for range b.N {
+		q.Drain(dst)
 	}
 	q.Close()
 }
