@@ -52,6 +52,11 @@ type putReq struct {
 	rsp   chan error
 }
 
+type drainReq struct {
+	dst [][]byte
+	rsp chan int
+}
+
 // Queue implements a filesystem backed FIFO queue.
 type Queue struct {
 	maxMemItems  int
@@ -70,6 +75,7 @@ type Queue struct {
 	done         chan struct{}
 	empty        chan struct{}
 	input        chan putReq
+	drainReqChan chan drainReq
 	output       chan []byte
 	clearReqChan chan chan error
 	statsReqChan chan chan Stats
@@ -181,6 +187,7 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 		dir:          dir,
 		done:         make(chan struct{}),
 		input:        make(chan putReq),
+		drainReqChan: make(chan drainReq),
 		empty:        make(chan struct{}),
 		output:       make(chan []byte),
 		clearReqChan: make(chan chan error),
@@ -322,6 +329,26 @@ func (q *Queue) PutBatch(items [][]byte) error {
 	return err
 }
 
+// Drain fills dst with up to len(dst) items currently available in the queue
+// and returns the number placed. Returns 0 if the queue is empty or closed, or
+// if dst is nil or zero-length.
+func (q *Queue) Drain(dst [][]byte) int {
+	if len(dst) == 0 {
+		return 0
+	}
+
+	q.closeMutex.RLock()
+	defer q.closeMutex.RUnlock()
+
+	if q.closed {
+		return 0
+	}
+
+	rsp := make(chan int, 1)
+	q.drainReqChan <- drainReq{dst: dst, rsp: rsp}
+	return <-rsp
+}
+
 // Stats retrieves information about queue internal data.
 func (q *Queue) Stats() Stats {
 	q.closeMutex.RLock()
@@ -426,6 +453,42 @@ func (q *Queue) run() {
 		return nil
 	}
 
+	refillHead := func() bool {
+		if q.files.Len() != 0 {
+			var bytesLoaded int
+			if snapCheck != nil {
+				// When snapshots are enabled, track the current tail-snapshot file number
+				// before loading. If no overflow files remain after the load, file numbers
+				// reset to 1, so any stale tail snapshot at that slot must be removed now,
+				// otherwise it will be replayed incorrectly on restart.
+				tailSnapNum := q.nextFileNum()
+				bytesLoaded = q.loadQueueFromFile(&headQ)
+				if q.files.Len() == 0 {
+					err := os.Remove(q.makeFilePath(tailSnapNum))
+					if err != nil && !errors.Is(err, fs.ErrNotExist) {
+						q.logger.Error("failed to remove snapshot", slog.Any("err", err))
+					}
+				}
+			} else {
+				bytesLoaded = q.loadQueueFromFile(&headQ)
+			}
+			if headQ.Len() != 0 {
+				headQBytes = bytesLoaded
+				return true
+			}
+		}
+		if tailQ.Len() != 0 {
+			// O(1) promotion: swap instead of copying all items.
+			headQ, tailQ = tailQ, headQ
+			headQBytes, tailQBytes = tailQBytes, 0
+			return true
+		}
+		next = nil
+		output = nil
+		empty = q.empty
+		return false
+	}
+
 	for {
 		select {
 		case req, open := <-q.input:
@@ -460,45 +523,35 @@ func (q *Queue) run() {
 			snapCount++
 			headQ.PopFront()
 			headQBytes -= len(next)
-			if headQ.Len() == 0 {
-				if q.files.Len() != 0 {
-					var bytesLoaded int
-					if snapCheck != nil {
-						// When snapshots are enabled, track the current tail-snapshot file number
-						// before loading. If no overflow files remain after the load, file numbers
-						// reset to 1, so any stale tail snapshot at that slot must be removed now,
-						// otherwise it will be replayed incorrectly on restart.
-						tailSnapNum := q.nextFileNum()
-						bytesLoaded = q.loadQueueFromFile(&headQ)
-						if q.files.Len() == 0 {
-							err := os.Remove(q.makeFilePath(tailSnapNum))
-							if err != nil && !errors.Is(err, fs.ErrNotExist) {
-								q.logger.Error("failed to remove snapshot", slog.Any("err", err))
-							}
-						}
-					} else {
-						bytesLoaded = q.loadQueueFromFile(&headQ)
-					}
+			if headQ.Len() != 0 || refillHead() {
+				next = headQ.Front()
+			}
 
-					if headQ.Len() != 0 {
-						headQBytes = bytesLoaded
-						next = headQ.Front()
-						continue
+		case req := <-q.drainReqChan:
+			snapCount++
+			space := len(req.dst)
+			var dstFull bool
+			var n int
+		drainLoop:
+			for {
+				for item := range headQ.IterPopFront() {
+					req.dst[n] = item
+					headQBytes -= len(item)
+					n++
+					if n == space {
+						dstFull = true
+						break
 					}
 				}
-				if tailQ.Len() != 0 {
-					// O(1) promotion: swap instead of copying all items.
-					headQ, tailQ = tailQ, headQ
-					headQBytes = tailQBytes
-					tailQBytes = 0
-				} else {
-					output = nil
-					next = nil
-					empty = q.empty
-					continue
+				if headQ.Len() == 0 && !refillHead() {
+					break drainLoop
+				}
+				if dstFull {
+					next = headQ.Front()
+					break drainLoop
 				}
 			}
-			next = headQ.Front()
+			req.rsp <- n
 
 		case errChan := <-q.clearReqChan:
 			snapCount = 0
