@@ -659,7 +659,7 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 	var (
 		bytesLoaded int
 		itemSize    int
-		itemSize32  int32
+		szbuf       [4]byte
 		r           io.Reader
 	)
 	reader := bufio.NewReader(readFile)
@@ -678,14 +678,14 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 	}
 
 	for {
-		err = binary.Read(r, binary.BigEndian, &itemSize32)
+		_, err = io.ReadFull(r, szbuf[:])
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			return bytesLoaded, fmt.Errorf("failed to read item size: %w", err)
 		}
-		itemSize = int(itemSize32)
+		itemSize = int(binary.BigEndian.Uint32(szbuf[:]))
 
 		// A size out of range means the file is corrupt; there's no safe way to skip
 		// to the next record, so return what we have and let the caller rename it.
@@ -792,9 +792,10 @@ retry:
 		w = gzw
 	}
 
+	var szbuf [4]byte
 	for item := range memQ.Iter() {
-		dataLen := int32(len(item)) //nolint:gosec
-		err = binary.Write(w, binary.BigEndian, dataLen)
+		binary.BigEndian.PutUint32(szbuf[:], uint32(len(item))) //nolint:gosec // item length limited to MaxInt32
+		_, err = w.Write(szbuf[:])
 		if err != nil {
 			return err
 		}
