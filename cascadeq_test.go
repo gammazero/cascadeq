@@ -87,9 +87,14 @@ func TestBadSaveDir(t *testing.T) {
 	if !strings.Contains(err.Error(), expect) {
 		t.Fatalf("expected error %q got %q", expect, err)
 	}
+}
 
+func TestDisappearingSaveDir(t *testing.T) {
+	dir := t.TempDir()
 	disappearDir := filepath.Join(dir, "disappear")
-	q, err = cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+
+	// Test save directory removed after startup/
+	q, err := cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +102,7 @@ func TestBadSaveDir(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	putN(t, 32, 0, q)
+	putN(t, 32, 0, q) // fill memory
 	if err = q.Put([]byte("hello")); err == nil {
 		t.Fatal("expected error")
 	}
@@ -105,12 +110,13 @@ func TestBadSaveDir(t *testing.T) {
 		t.Fatal("expected error")
 	}
 
+	// Test save directory removed between save and load.
 	disappearDir = filepath.Join(dir, "disappear2")
 	q, err = cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	putN(t, 55, 0, q)
+	putN(t, 55, 0, q) // write multiple files
 	if err = q.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -123,14 +129,13 @@ func TestBadSaveDir(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	getN(t, 16, 0, q)
+	getN(t, 16, 0, q) // trigger reading next file
 	select {
 	case <-q.Out():
 		t.Fatal("should not have read more items")
 	case <-q.Empty():
 		t.Log("ok, queue is empty")
 	}
-
 }
 
 func TestBadSizeLimits(t *testing.T) {
@@ -1807,8 +1812,7 @@ func TestSnapshot(t *testing.T) {
 		var b strings.Builder
 		logger := slog.New(slog.NewTextHandler(&b, &logOpts))
 
-		q := makeQueue(t, t.TempDir(), cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
-
+		q := makeQueue(t, dir, cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
 		putN(t, maxMemItems+(maxMemItems/2), 0, q)
 
 		dirName := filepath.Join(q.Dir(), "test-1.dat")
@@ -2132,6 +2136,35 @@ func benchmarkGet(size int64, b *testing.B) {
 
 	for range b.N {
 		<-q.Out()
+	}
+	q.Close()
+}
+
+func BenchmarkDrain1(b *testing.B)   { benchmarkDrain(1, b) }
+func BenchmarkDrain4(b *testing.B)   { benchmarkDrain(4, b) }
+func BenchmarkDrain16(b *testing.B)  { benchmarkDrain(16, b) }
+func BenchmarkDrain64(b *testing.B)  { benchmarkDrain(64, b) }
+func BenchmarkDrain256(b *testing.B) { benchmarkDrain(256, b) }
+
+func benchmarkDrain(batchSize int, b *testing.B) {
+	const itemSize = 256
+	b.ReportAllocs()
+	b.StopTimer()
+	qName := "bench_drain" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
+	q, err := cascadeq.New(qName, b.TempDir(), cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(itemSize), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
+	if err != nil {
+		b.Fatal(err)
+	}
+	data := make([]byte, itemSize)
+	dst := make([][]byte, batchSize)
+	for range b.N * batchSize {
+		q.Put(data)
+	}
+	b.SetBytes(int64(itemSize * batchSize))
+	b.StartTimer()
+
+	for range b.N {
+		q.Drain(dst)
 	}
 	q.Close()
 }
