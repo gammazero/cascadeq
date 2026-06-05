@@ -573,10 +573,15 @@ func (q *Queue) readQueueDir() error {
 }
 
 func (q *Queue) makeFileName(fileNum int64) string {
+	b := make([]byte, 0, len(q.name)+1+16+len(fileExt)+len(gzipExt))
+	b = append(b, q.name...)
+	b = append(b, '-')
+	b = strconv.AppendInt(b, fileNum, 16)
+	b = append(b, fileExt...)
 	if q.gzip {
-		return fmt.Sprintf("%s-%x%s%s", q.name, fileNum, fileExt, gzipExt)
+		b = append(b, gzipExt...)
 	}
-	return fmt.Sprintf("%s-%x%s", q.name, fileNum, fileExt)
+	return string(b)
 }
 
 func (q *Queue) makeFilePath(fileNum int64) string {
