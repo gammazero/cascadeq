@@ -794,7 +794,7 @@ retry:
 
 	var szbuf [4]byte
 	for item := range memQ.Iter() {
-		binary.BigEndian.PutUint32(szbuf[:], uint32(len(item)))
+		binary.BigEndian.PutUint32(szbuf[:], uint32(len(item))) //nolint:gosec // item length limited to MaxInt32
 		_, err = w.Write(szbuf[:])
 		if err != nil {
 			return err
