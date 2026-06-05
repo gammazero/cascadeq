@@ -49,19 +49,18 @@ type putReq struct {
 
 // Queue implements a filesystem backed FIFO queue.
 type Queue struct {
-	maxMemItems int
-	maxMemBytes int
-	maxItemSize int
-	minItemSize int
-
-	closed       bool
-	closeErr     error
-	closeMutex   sync.RWMutex
-	dir          string
-	gzip         bool
-	logger       *slog.Logger
-	name         string
+	maxMemItems  int
+	maxMemBytes  int
+	maxItemSize  int
+	minItemSize  int
 	snapInterval time.Duration
+
+	dir  string
+	name string
+
+	closeErr   error
+	closeMutex sync.RWMutex
+	logger     *slog.Logger
 
 	done         chan struct{}
 	empty        chan struct{}
@@ -70,12 +69,13 @@ type Queue struct {
 	clearReqChan chan chan error
 	statsReqChan chan chan Stats
 
-	files deque.Deque[int64]
+	files  deque.Deque[int64]
+	closed bool
+	gzip   bool
 }
 
 // Stats holds information about the Queue internal state.
 type Stats struct {
-	Closed     bool
 	MaxQBytes  int
 	MaxQLen    int
 	HeadQBytes int
@@ -83,6 +83,7 @@ type Stats struct {
 	TailQBytes int
 	TailQLen   int
 	Files      []string
+	Closed     bool
 }
 
 // WithGzip enables, if passed true, gzip compression of buffer files.
@@ -93,7 +94,7 @@ func WithGzip(enable bool) func(*Queue) {
 }
 
 // WithLogger sets the slog.Logger instance to use for logging. This replaces
-// the cascadeq default slog.Logger with a JSON handler that writes to stderr.
+// the default cascadeq slog.Logger with a JSON handler that writes to stderr.
 func WithLogger(logger *slog.Logger) func(*Queue) {
 	return func(q *Queue) {
 		if logger != nil {
@@ -307,7 +308,6 @@ func (q *Queue) run() {
 	var headQ, tailQ deque.Deque[[]byte]
 
 	defer func() {
-		// Save the contents of the in-memory queues.
 		q.closeErr = q.snapshotMemQueue(&headQ, &tailQ, true)
 		q.files.Clear()
 		close(q.output)
@@ -323,20 +323,19 @@ func (q *Queue) run() {
 		snapCount     int
 	)
 
-	empty := q.empty // signal that queue is empty
+	empty := q.empty
 	maxBytes := q.maxMemBytes >> 1
 	maxItems := q.maxMemItems >> 1
 	headQ.SetBaseCap(maxItems)
 	tailQ.SetBaseCap(maxItems)
 
 	if q.files.Len() != 0 {
-		// Load lowest numbered file into main queue.
 		bytesLoaded := q.loadQueueFromFile(&headQ)
 		if headQ.Len() != 0 {
 			next = headQ.Front()
 			output = q.output
 			headQBytes = bytesLoaded
-			empty = nil // queue is not empty
+			empty = nil
 			snapCount++
 		}
 	}
@@ -363,7 +362,7 @@ func (q *Queue) run() {
 					if next == nil {
 						next = headQ.Front()
 						output = q.output
-						empty = nil // stop signal that queue is empty
+						empty = nil
 					}
 				} else {
 					tailQ.PushBack(item)
@@ -378,26 +377,20 @@ func (q *Queue) run() {
 				req.rsp <- nil
 				continue
 			}
-			// Getting here means that tailQ is full, and headQ cannot be empty
-			// if there were any items in files or in tailQ.
-
-			// If no items in files and headQ is not full, then shift items
-			// from tailQ to headQ.
+			// tailQ is full. When no overflow files exist and headQ has room, shift tailQ
+			// items into headQ to avoid a disk write. Otherwise flush tailQ to the next
+			// numbered file (overwriting any existing tail snapshot).
 			if q.files.Len() == 0 && headQ.Len() < maxItems && headQBytes < maxBytes {
 				for fromTailQ := range tailQ.IterPopFront() {
-					// Shift items from tailQ to headQ.
 					headQ.PushBack(fromTailQ)
 					itemBytes := len(fromTailQ)
 					headQBytes += itemBytes
 					tailQBytes -= itemBytes
 					if headQ.Len() >= maxItems || headQBytes >= maxBytes {
-						// headQ is full, stop shifting items.
 						break
 					}
 				}
 			} else {
-				// Previous items in files or headQ full, so save tailQ in
-				// file. This will overwrite any existing tailQ snapshot.
 				err := q.saveTailToNextFile(&tailQ)
 				if err != nil {
 					req.rsp <- fmt.Errorf("failed saving queue to file: %w", err)
@@ -406,34 +399,26 @@ func (q *Queue) run() {
 				tailQBytes = 0
 			}
 
-			// Since headQ cannot be empty, shifting as many items as possible
-			// from tailQ to headQ always results in headQ being full and tailQ
-			// having at least one item remaining. Since headQ must be full,
-			// always put the incoming item on tailQ.
+			// After a shift, headQ is always full, so the incoming item goes to tailQ.
 			tailQ.PushBack(item)
 			tailQBytes += len(item)
 			req.rsp <- nil
 
 		case output <- next:
 			snapCount++
-			// Item was read, so remove it from the read-from queue.
 			headQ.PopFront()
 			headQBytes -= len(next)
 			if headQ.Len() == 0 {
-				// headQ (read-from queue) is empty, so refill it if possible.
 				if q.files.Len() != 0 {
-					// There are files to load items from, so load items from
-					// the next file.
 					var bytesLoaded int
-					if snapCheck != nil { // if snapshots enabled
+					if snapCheck != nil {
+						// When snapshots are enabled, track the current tail-snapshot file number
+						// before loading. If no overflow files remain after the load, file numbers
+						// reset to 1, so any stale tail snapshot at that slot must be removed now,
+						// otherwise it will be replayed incorrectly on restart.
 						tailSnapNum := q.nextFileNum()
 						bytesLoaded = q.loadQueueFromFile(&headQ)
 						if q.files.Len() == 0 {
-							// If there are no more regular files, then file
-							// names are reset back to 1, and any tail snapshot
-							// must be removed. Otherwise, if it does not get
-							// overwritten, then it will be picked up on
-							// restart and incorrectly replayed.
 							err := os.Remove(q.makeFilePath(tailSnapNum))
 							if err != nil && !errors.Is(err, fs.ErrNotExist) {
 								q.logger.Error("failed to remove snapshot", slog.Any("err", err))
@@ -450,17 +435,14 @@ func (q *Queue) run() {
 					}
 				}
 				if tailQ.Len() != 0 {
-					// headQ is empty, no files to load, so swap tailQ and
-					// headQ as a faster way of pulling all entries into headQ
-					// from tailQ.
+					// O(1) promotion: swap instead of copying all items.
 					headQ, tailQ = tailQ, headQ
 					headQBytes = tailQBytes
 					tailQBytes = 0
 				} else {
-					// headQ is empty and no more to items read
 					output = nil
 					next = nil
-					empty = q.empty // signal that queue is empty
+					empty = q.empty
 					continue
 				}
 			}
@@ -472,13 +454,12 @@ func (q *Queue) run() {
 			headQBytes = 0
 			tailQ.Clear()
 			tailQBytes = 0
-			// headQ is empty and no more to items read
 			output = nil
 			next = nil
-			empty = q.empty // signal that queue is empty
+			empty = q.empty
 
 			var errs []error
-			if snapCheck != nil { // if snapshots enabled
+			if snapCheck != nil {
 				err := q.snapshotMemQueue(&headQ, &tailQ, false)
 				if err != nil {
 					errs = append(errs, err)
@@ -507,34 +488,33 @@ func (q *Queue) run() {
 		case empty <- struct{}{}:
 
 		case <-snapCheck:
-			if snapCount > 0 {
-				// Do not create snapshot while under load, since normal I/O
-				// will save and retrieve data from files.
-				if snapCount == prevSnapCount {
-					tq := &tailQ
-					// Optimization: Write the tailQ directly to an overflow
-					// file, and not to a tail snapshot, if there are existing
-					// overflow files (tail will not move directly to head) and
-					// the tailQ is full.
-					if q.files.Len() != 0 && (tailQ.Len() >= maxItems || tailQBytes >= maxBytes) {
-						err := q.saveTailToNextFile(&tailQ)
-						if err != nil {
-							q.logger.Error("failed to save tail queue to file", slog.Any("err", err))
-						} else {
-							tailQBytes = 0
-						}
-						tq = nil
-					}
-
-					err := q.snapshotMemQueue(&headQ, tq, false)
+			// snapCount == prevSnapCount means no Put or read since last tick (idle). Skip
+			// snapshot under load: overflow I/O already handles persistence.
+			if snapCount > 0 && snapCount == prevSnapCount {
+				tq := &tailQ
+				// If overflow files exist and tailQ is full, flush tailQ as a regular overflow
+				// file instead of a tail snapshot: the tail cannot move directly to head
+				// anyway, so this avoids creating both a tail snapshot and, after another
+				// queue input, a tail overflow file.
+				if q.files.Len() != 0 && (tailQ.Len() >= maxItems || tailQBytes >= maxBytes) {
+					err := q.saveTailToNextFile(&tailQ)
 					if err != nil {
-						q.logger.Error("failed to save snapshot to file", slog.Any("err", err))
-						// Try again in two more snapCheck intervals.
-						snapCount++
-						continue
+						q.logger.Error("failed to save tail queue to file", slog.Any("err", err))
+					} else {
+						tailQBytes = 0
 					}
-					snapCount = 0
+					tq = nil
 				}
+
+				err := q.snapshotMemQueue(&headQ, tq, false)
+				if err != nil {
+					q.logger.Error("failed to save snapshot to file", slog.Any("err", err))
+					// Increment so next tick sees a changed count and skips, giving two full
+					// intervals before next attempt.
+					snapCount++
+					continue
+				}
+				snapCount = 0
 			}
 			prevSnapCount = snapCount
 		}
@@ -555,7 +535,7 @@ func (q *Queue) getFileNames() []string {
 func (q *Queue) readQueueDir() error {
 	entries, err := os.ReadDir(q.dir)
 	if err != nil {
-		// If directory does not exist or is empty.
+		// io.EOF is returned by some implementations for an empty directory.
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -612,8 +592,8 @@ func (q *Queue) handleReadError(readPath string) {
 retry:
 	err := os.Rename(readPath, badName)
 	if err != nil {
-		// If the bad file already exists, try to add a number suffix to rename
-		// it. Limit retries to not go past ".9" suffix.
+		// If the bad file already exists, try to add a number suffix to rename it.
+		// Limit retries to not go past ".9" suffix.
 		if errors.Is(err, fs.ErrExist) && badn < 9 {
 			if badn == 0 {
 				badNameBase = badName
@@ -628,10 +608,9 @@ retry:
 	q.logger.Info("renamed bad file", slog.String("newName", filepath.Base(badName)))
 }
 
-// loadQueueFromFile loads the given deque with the contents of the next
-// readable file. Errors reading a file are handled by renaming the file to
-// have a ".bad" extension. If a partial read occurs, then returns with the
-// items that were loaded.
+// loadQueueFromFile loads the next readable file into headQ. On error the file
+// is renamed to .bad rather than deleted. A partial read returns whatever
+// items were loaded successfully.
 func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 	var bytesLoaded int
 
@@ -642,9 +621,8 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 		bytesLoaded, err = readQueueFile(readPath, q.minItemSize, q.maxItemSize, headQ)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				// In case the file was created previously using a different
-				// gzip setting. This should be rare, so the filename was not
-				// preserved from the initial read of the directory.
+				// The gzip setting may have changed since the file was written; try the
+				// opposite extension before giving up.
 				var wasGzip bool
 				readPath, wasGzip = strings.CutSuffix(readPath, gzipExt)
 				if !wasGzip {
@@ -703,19 +681,18 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 		err = binary.Read(r, binary.BigEndian, &itemSize32)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				// Nothing left to read.
 				break
 			}
 			return bytesLoaded, fmt.Errorf("failed to read item size: %w", err)
 		}
 		itemSize = int(itemSize32)
 
-		// If file is corrupt then no way to tell where good items begin.
+		// A size out of range means the file is corrupt; there's no safe way to skip
+		// to the next record, so return what we have and let the caller rename it.
 		if itemSize < minItemSize || itemSize > maxItemSize {
 			return bytesLoaded, fmt.Errorf("read invalid item size: %d", itemSize)
 		}
 
-		// Read item and put it into the in-mem queue.
 		readBuf := make([]byte, itemSize)
 		_, err = io.ReadFull(r, readBuf)
 		if err != nil {
@@ -750,15 +727,13 @@ func (q *Queue) snapshotMemQueue(headQ, tailQ *deque.Deque[[]byte], sync bool) e
 	var errs []error
 
 	if headQ != nil {
-		// headQ contains the oldest unread items. Write it to file 0 so that
-		// it is loaded first.
+		// File 0 is the head snapshot; it is always loaded first on restart.
 		writePath := q.makeFilePath(0)
 		if headQ.Len() != 0 {
 			if err := q.saveToFile(writePath, headQ, sync); err != nil {
 				errs = append(errs, err)
 			}
 		} else {
-			// headQ is empty, so delete old head snapshot.
 			err := os.Remove(writePath)
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)
@@ -773,7 +748,6 @@ func (q *Queue) snapshotMemQueue(headQ, tailQ *deque.Deque[[]byte], sync bool) e
 				errs = append(errs, err)
 			}
 		} else {
-			// tailQ is empty, so delete old tail snapshot.
 			err := os.Remove(writePath)
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)
@@ -818,20 +792,16 @@ retry:
 		w = gzw
 	}
 
-	var size int32
 	for item := range memQ.Iter() {
 		dataLen := int32(len(item)) //nolint:gosec
 		err = binary.Write(w, binary.BigEndian, dataLen)
 		if err != nil {
 			return err
 		}
-
 		_, err = w.Write(item)
 		if err != nil {
 			return err
-
 		}
-		size += dataLen + 4
 	}
 	if gzw != nil {
 		err = gzw.Close()
@@ -858,8 +828,7 @@ retry:
 retryRename:
 	err = os.Rename(writePathTmp, writePath)
 	if err != nil {
-		// OK to delete writePath as this is stale data or a file or directory
-		// that should not be here.
+		// writePath already exists (stale tmp or leftover dir): remove and retry once.
 		if errors.Is(err, fs.ErrExist) && canRetry && os.Remove(writePath) == nil {
 			canRetry = false
 			goto retryRename
