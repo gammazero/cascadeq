@@ -43,6 +43,36 @@ func Example_basic() {
 	// item-2
 }
 
+// Example_batch demonstrates PutBatch and Drain for high-throughput batch I/O.
+func Example_batch() {
+	dir, err := os.MkdirTemp("", "cascadeq-example-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	q, err := cascadeq.New("example", dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer q.Close()
+
+	items := [][]byte{[]byte("alpha"), []byte("beta"), []byte("gamma")}
+	if err := q.PutBatch(items); err != nil {
+		log.Fatal(err)
+	}
+
+	dst := make([][]byte, 10)
+	n := q.Drain(dst)
+	for _, item := range dst[:n] {
+		fmt.Println(string(item))
+	}
+	// Output:
+	// alpha
+	// beta
+	// gamma
+}
+
 // Example_options shows configuring memory limits and gzip compression.
 func Example_options() {
 	dir, err := os.MkdirTemp("", "cascadeq-example-*")
