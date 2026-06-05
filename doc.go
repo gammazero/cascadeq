@@ -17,8 +17,8 @@
 //
 // # Usage
 //
-// Create a Queue with New, write items with Put, and consume them by ranging
-// over the channel returned by Out:
+// Create a Queue with New, write items with Put or PutBatch, and consume them
+// via the channel returned by Out or by calling Drain:
 //
 //	q, err := cascadeq.New("myqueue", "/var/data/queues")
 //	if err != nil {
@@ -26,12 +26,18 @@
 //	}
 //	defer q.Close()
 //
-//	// Producer
+//	// Single-item producer
 //	if err := q.Put([]byte("hello")); err != nil {
 //	    log.Println(err)
 //	}
 //
-//	// Consumer
+//	// Batch producer — one round-trip for the whole slice
+//	items := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+//	if err := q.PutBatch(items); err != nil {
+//	    log.Println(err)
+//	}
+//
+//	// Channel consumer
 //	for {
 //	    select {
 //	    case item := <-q.Out():
@@ -41,6 +47,12 @@
 //	    case <-q.Done():
 //	        return // queue closed
 //	    }
+//	}
+//
+//	// Batch consumer — drain up to N items in one round-trip
+//	dst := make([][]byte, 64)
+//	if n := q.Drain(dst); n > 0 {
+//	    process(dst[:n])
 //	}
 //
 // # Options

@@ -16,6 +16,7 @@
 - **Optional compression**: pass `WithGzip(true)` to compress overflow files
 - **Idle snapshots**: pass `WithSnapshotInterval` to periodically persist in-memory data when the queue is idle, to increase crash safety with minimal throughput cost.
 - **Channel-based API**: consume items with a plain `<-q.Out()` in a `select`
+- **Batch I/O**: `PutBatch` enqueues a slice of items in one round-trip; `Drain` dequeues up to N items in one round-trip
 
 ## Installation
 
@@ -58,6 +59,23 @@ func main() {
             return
         }
     }
+}
+```
+
+**Batch I/O** — enqueue or dequeue multiple items in a single round-trip:
+
+```go
+// Enqueue a batch.
+items := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+if err := q.PutBatch(items); err != nil {
+    log.Fatal(err)
+}
+
+// Drain up to 64 items at once.
+dst := make([][]byte, 64)
+n := q.Drain(dst)
+for _, item := range dst[:n] {
+    fmt.Println(string(item))
 }
 ```
 
