@@ -47,8 +47,9 @@ var rspErrPool = sync.Pool{
 // event loop sends its result. Each Put supplies its own response channel so
 // that concurrent callers cannot receive each other's results.
 type putReq struct {
-	item []byte
-	rsp  chan error
+	item  []byte
+	items [][]byte // non-nil for PutBatch; nil for Put
+	rsp   chan error
 }
 
 // Queue implements a filesystem backed FIFO queue.
@@ -296,6 +297,31 @@ func (q *Queue) Put(item []byte) (err error) {
 	return err
 }
 
+// PutBatch enqueues all items in a single event-loop visit. If items is nil or
+// empty, it returns nil immediately. Returns the first size-validation error
+// encountered; items before the invalid one are already enqueued.
+func (q *Queue) PutBatch(items [][]byte) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if len(items) == 1 {
+		return q.Put(items[0])
+	}
+
+	q.closeMutex.RLock()
+	defer q.closeMutex.RUnlock()
+
+	if q.closed {
+		return ErrClosed
+	}
+
+	rsp := rspErrPool.Get().(chan error)
+	q.input <- putReq{items: items, rsp: rsp}
+	err := <-rsp
+	rspErrPool.Put(rsp)
+	return err
+}
+
 // Stats retrieves information about queue internal data.
 func (q *Queue) Stats() Stats {
 	q.closeMutex.RLock()
@@ -355,62 +381,80 @@ func (q *Queue) run() {
 		snapCheck = snapTicker.C
 	}
 
+	putItem := func(item []byte) error {
+		snapCount++
+		if q.files.Len() == 0 && tailQ.Len() == 0 {
+			if headQ.Len() < maxItems && headQBytes < maxBytes {
+				headQ.PushBack(item)
+				headQBytes += len(item)
+				if next == nil {
+					next = headQ.Front()
+					output = q.output
+					empty = nil
+				}
+				return nil
+			}
+			tailQ.PushBack(item)
+			tailQBytes += len(item)
+			return nil
+		}
+		if tailQ.Len() < maxItems && tailQBytes < maxBytes {
+			tailQ.PushBack(item)
+			tailQBytes += len(item)
+			return nil
+		}
+		// tailQ is full: shift into headQ if possible, otherwise flush to disk.
+		if q.files.Len() == 0 && headQ.Len() < maxItems && headQBytes < maxBytes {
+			var deltaBytes int
+			for fromTailQ := range tailQ.IterPopFront() {
+				headQ.PushBack(fromTailQ)
+				deltaBytes += len(fromTailQ)
+				if headQ.Len() >= maxItems || headQBytes >= maxBytes {
+					break
+				}
+			}
+			headQBytes += deltaBytes
+			tailQBytes -= deltaBytes
+		} else {
+			if err := q.saveTailToNextFile(&tailQ); err != nil {
+				return fmt.Errorf("failed saving queue to file: %w", err)
+			}
+			tailQBytes = 0
+		}
+		tailQ.PushBack(item)
+		tailQBytes += len(item)
+		return nil
+	}
+
 	for {
 		select {
 		case req, open := <-q.input:
 			if !open {
 				return
 			}
-			item := req.item
-			snapCount++
-			if q.files.Len() == 0 && tailQ.Len() == 0 {
-				if headQ.Len() < maxItems && headQBytes < maxBytes {
-					headQ.PushBack(item)
-					headQBytes += len(item)
-					if next == nil {
-						next = headQ.Front()
-						output = q.output
-						empty = nil
-					}
-				} else {
-					tailQ.PushBack(item)
-					tailQBytes += len(item)
-				}
-				req.rsp <- nil
+			if req.items == nil {
+				// Single-item Put path (unchanged).
+				req.rsp <- putItem(req.item)
 				continue
 			}
-			if tailQ.Len() < maxItems && tailQBytes < maxBytes {
-				tailQ.PushBack(item)
-				tailQBytes += len(item)
-				req.rsp <- nil
-				continue
-			}
-			// tailQ is full. When no overflow files exist and headQ has room, shift tailQ
-			// items into headQ to avoid a disk write. Otherwise flush tailQ to the next
-			// numbered file (overwriting any existing tail snapshot).
-			if q.files.Len() == 0 && headQ.Len() < maxItems && headQBytes < maxBytes {
-				for fromTailQ := range tailQ.IterPopFront() {
-					headQ.PushBack(fromTailQ)
-					itemBytes := len(fromTailQ)
-					headQBytes += itemBytes
-					tailQBytes -= itemBytes
-					if headQ.Len() >= maxItems || headQBytes >= maxBytes {
-						break
-					}
+			// Batch put: enqueue each item with the same logic as single Put.
+			var err error
+		batchLoop:
+			for _, item := range req.items {
+				if item == nil {
+					continue batchLoop
 				}
-			} else {
-				err := q.saveTailToNextFile(&tailQ)
+				dataLen := len(item)
+				if dataLen < q.minItemSize || dataLen > q.maxItemSize {
+					err = fmt.Errorf("invalid item size (%d) min=%d max=%d", dataLen, q.minItemSize, q.maxItemSize)
+					break batchLoop
+				}
+				err = putItem(item)
 				if err != nil {
-					req.rsp <- fmt.Errorf("failed saving queue to file: %w", err)
-					continue
+					break batchLoop
 				}
-				tailQBytes = 0
 			}
-
-			// After a shift, headQ is always full, so the incoming item goes to tailQ.
-			tailQ.PushBack(item)
-			tailQBytes += len(item)
-			req.rsp <- nil
+			req.rsp <- err
 
 		case output <- next:
 			snapCount++
