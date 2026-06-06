@@ -504,7 +504,7 @@ func (q *Queue) run() {
 			}
 			snapCount++
 			if req.items == nil {
-				// Single-item Put path (unchanged).
+				// Single-item Put path.
 				req.rsp <- putItem(req.item)
 				continue
 			}
