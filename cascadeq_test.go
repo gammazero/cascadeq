@@ -1267,7 +1267,7 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test missing file that was previously seenn at start.
+	// Test missing file that was previously seen at start.
 	q = makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
 	t.Log("writing 129 items to queue")
 	putN(t, 129, 0, q)
