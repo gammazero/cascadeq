@@ -767,7 +767,9 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 		err = os.Remove(readPath)
 		if err != nil {
 			q.logger.Error("failed to remove file", slog.String("path", readPath), slog.Any("err", err))
-			q.handleReadError(readPath)
+			if !errors.Is(err, os.ErrNotExist) {
+				q.handleReadError(readPath)
+			}
 		}
 	}
 

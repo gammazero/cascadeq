@@ -89,7 +89,7 @@ func TestBadSaveDir(t *testing.T) {
 	}
 }
 
-func TestDisappearingSaveDir(t *testing.T) {
+func TestDisappearingOverflowDir(t *testing.T) {
 	dir := t.TempDir()
 	disappearDir := filepath.Join(dir, "disappear")
 
@@ -125,16 +125,27 @@ func TestDisappearingSaveDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer q.Close()
+
+	// Need to wait for stats to return to ensure q internal goroutine is
+	// running and has loaded head file.
+	stats := q.Stats()
+	if len(stats.Files) != 3 {
+		t.Fatal("expected 3 files")
+	}
+
 	err = os.RemoveAll(disappearDir)
 	if err != nil {
 		panic(err)
 	}
+
 	getN(t, 16, 0, q) // trigger reading next file
 	select {
 	case <-q.Out():
 		t.Fatal("should not have read more items")
 	case <-q.Empty():
 		t.Log("ok, queue is empty")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for data or empty")
 	}
 }
 
