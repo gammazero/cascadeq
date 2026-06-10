@@ -1204,11 +1204,15 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 	}
 	defer os.Remove(name)
 	t.Log("replaced file", name, "with directory of same name")
-
-	var rdn int
+	_, err = cascadeq.New(q.Name(), dir)
+	if err == nil || !errors.Is(err, cascadeq.ErrIsDirectory) {
+		t.Fatalf("expected error %q, got %q", cascadeq.ErrIsDirectory, err)
+	}
+	os.Remove(name)
 
 	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
 
+	var rdn int
 	t.Log("reading 48 item from queue, loading from files 0, 1, 2.")
 	getN(t, 48, rdn, q)
 	// Items 48-63 removed in file 3, and 64-79 removed in file 4.
@@ -1263,7 +1267,7 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test missing file that was previously see at start.
+	// Test missing file that was previously seenn at start.
 	q = makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
 	t.Log("writing 129 items to queue")
 	putN(t, 129, 0, q)
@@ -1375,6 +1379,33 @@ func TestCorruptedFiles(t *testing.T) {
 	}
 	rdn = getAll(t, rdn, q)
 
+	// Corrupt safe file by replacing it with directory of same name.
+	t.Log("writing 64 items to queue")
+	wrn = putN(t, 64, wrn, q)
+	stats = q.Stats()
+	if len(stats.Files) != 2 {
+		t.Fatal("expected 2 files saved, got", len(stats.Files))
+	}
+	corrupt = filepath.Join(dir, stats.Files[0])
+	t.Log("corrupting fail by replacing it with directory:", corrupt)
+	err = os.Remove(corrupt)
+	if err != nil {
+		panic(err)
+	}
+	err = os.Mkdir(corrupt, 0700)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(corrupt)
+	rdn = getN(t, 16, rdn, q)
+	stats = q.Stats()
+	if len(stats.Files) != 0 {
+		t.Fatal("should not have any save files:", stats.Files)
+	}
+	rdn += 16 // should have skipped corrpted file
+	rdn = getAll(t, rdn, q)
+	os.Remove(corrupt)
+
 	// Corrupt record length and prevent corrupted file from being renamed.
 	t.Log("writing 64 items to queue")
 	putN(t, 64, wrn, q)
@@ -1420,6 +1451,9 @@ func TestCorruptedFiles(t *testing.T) {
 	}
 
 	os.Remove(rename)
+
+	t.Log("Testing data file corrupted by being replaced by directory")
+	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
 
 	t.Log("Testing that snapshots are removed when all files are consumed")
 	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(100*time.Millisecond))
@@ -2040,6 +2074,62 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 			q.Close()
 		}
 	})
+}
+
+func BenchmarkPutManySingle(b *testing.B) {
+	q, err := cascadeq.New("put-many-single", b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		err := q.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
+	})
+	items := randItems(1000, 15, 32)
+	var size int64
+	for _, item := range items {
+		size += int64(len(item))
+	}
+	b.SetBytes(size)
+	b.ResetTimer()
+
+	for b.Loop() {
+		for _, item := range items {
+			err = q.Put(item)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
+func BenchmarkPutManyBatch(b *testing.B) {
+	q, err := cascadeq.New("put-many-batch", b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		err := q.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
+	})
+	items := randItems(1000, 15, 32)
+	var size int64
+	for _, item := range items {
+		size += int64(len(item))
+	}
+	b.SetBytes(size)
+	b.ResetTimer()
+
+	for b.Loop() {
+		err = q.PutBatch(items)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func BenchmarkPut16(b *testing.B) {
