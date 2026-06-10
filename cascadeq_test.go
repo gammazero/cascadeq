@@ -2076,13 +2076,13 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 	})
 }
 
-func BenchmarkPutManySingle(b *testing.B) {
-	q, err := cascadeq.New("put-many-single", b.TempDir())
+func BenchmarkPutMany(b *testing.B) {
+	q, err := cascadeq.New("put-many", b.TempDir())
 	if err != nil {
 		b.Fatal(err)
 	}
 	b.Cleanup(func() {
-		err := q.Close()
+		err = q.Close()
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2092,43 +2092,39 @@ func BenchmarkPutManySingle(b *testing.B) {
 	for _, item := range items {
 		size += int64(len(item))
 	}
-	b.SetBytes(size)
-	b.ResetTimer()
 
-	for b.Loop() {
-		for _, item := range items {
-			err = q.Put(item)
+	b.Run("single", func(b *testing.B) {
+		b.SetBytes(size)
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, item := range items {
+				err = q.Put(item)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+	})
+
+	err = q.Clear()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("batch", func(b *testing.B) {
+		b.SetBytes(size)
+		b.ReportAllocs()
+		for b.Loop() {
+			err = q.PutBatch(items)
 			if err != nil {
 				b.Fatal(err)
 			}
 		}
-	}
-}
+	})
 
-func BenchmarkPutManyBatch(b *testing.B) {
-	q, err := cascadeq.New("put-many-batch", b.TempDir())
+	err = q.Clear()
 	if err != nil {
 		b.Fatal(err)
-	}
-	b.Cleanup(func() {
-		err := q.Close()
-		if err != nil {
-			b.Fatal(err)
-		}
-	})
-	items := randItems(1000, 15, 32)
-	var size int64
-	for _, item := range items {
-		size += int64(len(item))
-	}
-	b.SetBytes(size)
-	b.ResetTimer()
-
-	for b.Loop() {
-		err = q.PutBatch(items)
-		if err != nil {
-			b.Fatal(err)
-		}
 	}
 }
 
