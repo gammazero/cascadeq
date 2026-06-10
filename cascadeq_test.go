@@ -672,7 +672,7 @@ func TestClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(entries) != 0 {
-		t.Fatal("should not have any save files, but found", len(entries))
+		t.Fatal("should not have any overflow files, but found", len(entries))
 	}
 
 	stats = q.Stats()
@@ -867,7 +867,7 @@ func TestChangeSizeAcrossSave(t *testing.T) {
 	// Test saving to small files then reading into larger memory queue.
 	q := makeQueue(t, dir, cascadeq.WithMaxMemItems(smallLimit))
 
-	// Enqueue enough items to generate multiple save files.
+	// Enqueue enough items to generate multiple overflow files.
 	for i := range msgCount {
 		msg := fmt.Sprintf("%04d", i)
 		err := q.Put([]byte(msg))
@@ -1061,7 +1061,7 @@ func TestAllIOLoop(t *testing.T) {
 	wrn = putN(t, 1, wrn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 1 {
-		t.Fatalf("expected 1 save file, but there are %d", len(stats.Files))
+		t.Fatalf("expected 1 overflow file, but there are %d", len(stats.Files))
 	}
 	if stats.TailQLen != 1 {
 		t.Fatalf("q1 should have 1 items but has %d", stats.TailQLen)
@@ -1078,7 +1078,7 @@ func TestAllIOLoop(t *testing.T) {
 		t.Fatalf("q1 should have 1 items but has %d", stats.TailQLen)
 	}
 	if len(stats.Files) != 0 {
-		t.Fatalf("expected 0 save files, but there are %d", len(stats.Files))
+		t.Fatalf("expected 0 overflow files, but there are %d", len(stats.Files))
 	}
 	t.Log("loaded q0 from file, so now q0 is full and q1 has 1 item and there are 0 saved files")
 
@@ -1086,7 +1086,7 @@ func TestAllIOLoop(t *testing.T) {
 	putN(t, 32, wrn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 2 {
-		t.Fatalf("expected 2 save files, but there are %d", len(stats.Files))
+		t.Fatalf("expected 2 overflow files, but there are %d", len(stats.Files))
 	}
 	if stats.TailQLen != 1 {
 		t.Fatalf("q1 should have 1 items but has %d", stats.TailQLen)
@@ -1116,7 +1116,7 @@ func TestAllIOLoop(t *testing.T) {
 	if stats.TailQLen != 4 {
 		t.Fatalf("q1 should have 4 items but has %d", stats.TailQLen)
 	}
-	t.Log("q0 is full and q1 has 4 items, closing to check for save files")
+	t.Log("q0 is full and q1 has 4 items, closing to check for overflow files")
 
 	err = q.Close()
 	if err != nil {
@@ -1128,19 +1128,19 @@ func TestAllIOLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(entries) != 2 {
-		t.Fatal("expected 2 save files, have", len(entries))
+		t.Fatal("expected 2 overflow files, have", len(entries))
 	}
 
 	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
 
 	stats = q.Stats()
 	if len(stats.Files) != 1 {
-		t.Fatal("expected 1 save file, but have", len(stats.Files))
+		t.Fatal("expected 1 overflow file, but have", len(stats.Files))
 	}
 	if stats.HeadQLen != stats.MaxQLen {
 		t.Fatalf("q0 should be full but has %d out of %d items", stats.HeadQLen, stats.MaxQLen)
 	}
-	t.Log("q0 is full and there is 1 save file remaining")
+	t.Log("q0 is full and there is 1 overflow file remaining")
 
 	t.Log("reading 20 items from queue to check everything loaded, should start at", rdn, "...")
 	rdn = getN(t, 20, rdn, q)
@@ -1152,7 +1152,7 @@ func TestAllIOLoop(t *testing.T) {
 		t.Fatalf("q1 should be empty but has %d items", stats.TailQLen)
 	}
 	if len(stats.Files) != 0 {
-		t.Fatalf("expected 0 save files, but there are %d", len(stats.Files))
+		t.Fatalf("expected 0 overflow files, but there are %d", len(stats.Files))
 	}
 
 	t.Log("writing 50 items to queue then reading until empty")
@@ -1311,7 +1311,7 @@ func TestCorruptedFiles(t *testing.T) {
 		t.Fatal("expected 2 files saved, got", len(stats.Files))
 	}
 	corrupt := filepath.Join(dir, stats.Files[0])
-	t.Log("corrupting item size in save file:", corrupt)
+	t.Log("corrupting item size in overflow file:", corrupt)
 	err := os.Truncate(corrupt, 2)
 	if err != nil {
 		panic(err)
@@ -1321,7 +1321,7 @@ func TestCorruptedFiles(t *testing.T) {
 	rdn = getN(t, 1, rdn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 0 {
-		t.Fatal("should not have any save files:", stats.Files)
+		t.Fatal("should not have any overflow files:", stats.Files)
 	}
 	rdn = getAll(t, rdn, q)
 
@@ -1333,7 +1333,7 @@ func TestCorruptedFiles(t *testing.T) {
 		t.Fatal("expected 2 files saved, got", len(stats.Files))
 	}
 	corrupt = filepath.Join(dir, stats.Files[0])
-	t.Log("corrupting item data in save file:", corrupt)
+	t.Log("corrupting item data in overflow file:", corrupt)
 	err = os.Truncate(corrupt, 5)
 	if err != nil {
 		panic(err)
@@ -1343,7 +1343,7 @@ func TestCorruptedFiles(t *testing.T) {
 	rdn = getN(t, 1, rdn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 0 {
-		t.Fatal("should not have any save files:", stats.Files)
+		t.Fatal("should not have any overflow files:", stats.Files)
 	}
 	rdn = getAll(t, rdn, q)
 
@@ -1355,7 +1355,7 @@ func TestCorruptedFiles(t *testing.T) {
 		t.Fatal("expected 2 files saved, got", len(stats.Files))
 	}
 	corrupt = filepath.Join(dir, stats.Files[0])
-	t.Log("corrupting item size with oversize value in save file:", corrupt)
+	t.Log("corrupting item size with oversize value in overflow file:", corrupt)
 	writeFile, err := os.OpenFile(corrupt, os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		panic(err)
@@ -1375,11 +1375,11 @@ func TestCorruptedFiles(t *testing.T) {
 	rdn = getN(t, 1, rdn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 0 {
-		t.Fatal("should not have any save files:", stats.Files)
+		t.Fatal("should not have any overflow files:", stats.Files)
 	}
 	rdn = getAll(t, rdn, q)
 
-	// Corrupt safe file by replacing it with directory of same name.
+	// Corrupt file by replacing it with directory of same name.
 	t.Log("writing 64 items to queue")
 	wrn = putN(t, 64, wrn, q)
 	stats = q.Stats()
@@ -1400,7 +1400,7 @@ func TestCorruptedFiles(t *testing.T) {
 	rdn = getN(t, 16, rdn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 0 {
-		t.Fatal("should not have any save files:", stats.Files)
+		t.Fatal("should not have any overflow files:", stats.Files)
 	}
 	rdn += 16 // should have skipped corrpted file
 	rdn = getAll(t, rdn, q)
@@ -1414,7 +1414,7 @@ func TestCorruptedFiles(t *testing.T) {
 		t.Fatal("expected 2 files saved, got", len(stats.Files))
 	}
 	corrupt = filepath.Join(dir, stats.Files[0])
-	t.Log("corrupting item size amd preventing renaming of save file:", corrupt)
+	t.Log("corrupting item size amd preventing renaming of overflow file:", corrupt)
 	err = os.Truncate(corrupt, 2)
 	if err != nil {
 		panic(err)
@@ -1431,7 +1431,7 @@ func TestCorruptedFiles(t *testing.T) {
 	getN(t, 1, rdn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 0 {
-		t.Fatal("should not have any save files:", stats.Files)
+		t.Fatal("should not have any overflow files:", stats.Files)
 
 	}
 	// Check that bad file was written with .bad.1 to avoid existing .bad file.
@@ -1520,7 +1520,7 @@ func TestCorruptedFiles(t *testing.T) {
 	getN(t, 1, rdn, q)
 	stats = q.Stats()
 	if len(stats.Files) != 0 {
-		t.Fatal("should not have any save files:", stats.Files)
+		t.Fatal("should not have any overflow files:", stats.Files)
 
 	}
 	// Check that bad file was written with .bad.1 to avoid existing .bad file.
@@ -1723,7 +1723,7 @@ func TestZeroLength(t *testing.T) {
 
 	stats := q.Stats()
 	if len(stats.Files) != 3 {
-		t.Fatal("expected 3 save files, got", len(stats.Files))
+		t.Fatal("expected 3 overflow files, got", len(stats.Files))
 	}
 
 	for range 32 {
@@ -1739,7 +1739,7 @@ func TestZeroLength(t *testing.T) {
 
 	stats = q.Stats()
 	if len(stats.Files) != 1 {
-		t.Fatal("expected 1 save file, got", len(stats.Files))
+		t.Fatal("expected 1 overflow file, got", len(stats.Files))
 	}
 }
 
@@ -1767,7 +1767,7 @@ func TestSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(entries) != 2 {
-			t.Fatal("expected 2 save files, got", len(entries))
+			t.Fatal("expected 2 overflow files, got", len(entries))
 		}
 
 		q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
