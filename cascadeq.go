@@ -20,6 +20,7 @@ import (
 
 	"github.com/gammazero/deque"
 	"github.com/gammazero/fsutil"
+	"github.com/gammazero/fsutil/atomicfile"
 )
 
 const (
@@ -38,6 +39,10 @@ const (
 
 // ErrClosed is returned when I/O is attempted on a closed Queue.
 var ErrClosed = errors.New("closed")
+
+// ErrIsDirectory is returned when trying to read a queue file this is a
+// directory.
+var ErrIsDirectory = errors.New("queue file is a directory")
 
 // putReq carries an item to enqueue together with the channel on which the
 // event loop sends its result. Each Put supplies its own response channel so
@@ -661,9 +666,6 @@ func (q *Queue) readQueueDir() error {
 
 	files := make([]int64, 0, len(entries))
 	for _, ent := range entries {
-		if ent.IsDir() {
-			continue
-		}
 		name := strings.TrimSuffix(ent.Name(), gzipExt)
 		name, found := strings.CutSuffix(name, fileExt)
 		if !found {
@@ -676,6 +678,9 @@ func (q *Queue) readQueueDir() error {
 		fileNum, err := strconv.ParseInt(name, 16, 64)
 		if err != nil {
 			continue
+		}
+		if ent.IsDir() {
+			return fmt.Errorf("cannot read queue file %q: %w", ent.Name(), ErrIsDirectory)
 		}
 		files = append(files, fileNum)
 	}
@@ -753,14 +758,18 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
 			}
 			if err != nil {
 				q.logger.Error("failed to load file", slog.String("path", readPath), slog.Any("err", err))
-				q.handleReadError(readPath)
+				if !errors.Is(err, ErrIsDirectory) {
+					q.handleReadError(readPath)
+				}
 				continue // read next file
 			}
 		}
 		err = os.Remove(readPath)
 		if err != nil {
 			q.logger.Error("failed to remove file", slog.String("path", readPath), slog.Any("err", err))
-			q.handleReadError(readPath)
+			if !errors.Is(err, os.ErrNotExist) {
+				q.handleReadError(readPath)
+			}
 		}
 	}
 
@@ -774,6 +783,17 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 	}
 	defer readFile.Close() //nolint:errcheck
 
+	fi, err := readFile.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if fi.IsDir() {
+		return 0, ErrIsDirectory
+	}
+	if fi.Size() == 0 {
+		return 0, nil // empty file
+	}
+
 	var (
 		bytesLoaded int
 		itemSize    int
@@ -786,9 +806,6 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 	if strings.HasSuffix(readPath, gzipExt) {
 		gzr, err := gzip.NewReader(reader)
 		if err != nil {
-			if fi, statErr := readFile.Stat(); statErr == nil && fi.Size() == 0 {
-				return 0, nil // empty file
-			}
 			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
 		defer gzr.Close() //nolint:errcheck
@@ -877,26 +894,13 @@ func (q *Queue) snapshotMemQueue(headQ, tailQ *deque.Deque[[]byte], sync bool) e
 }
 
 func (q *Queue) saveToFile(writePath string, memQ *deque.Deque[[]byte], sync bool) error {
-	writePathTmp := writePath + ".tmp"
-	canRetry := true
-retry:
-	writeFile, err := os.OpenFile(writePathTmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec
+	writeFile, err := atomicfile.Create(writePath, 0600)
 	if err != nil {
-		if os.Remove(writePathTmp) == nil {
-			// Removed unopenable file, so retry once.
-			if canRetry {
-				canRetry = false
-				goto retry
-			}
-		}
 		return err
 	}
 	defer func() {
 		if err != nil {
-			if writeFile != nil {
-				_ = writeFile.Close()
-			}
-			_ = os.Remove(writePathTmp)
+			_ = writeFile.Discard()
 		}
 	}()
 
@@ -938,21 +942,5 @@ retry:
 			return err
 		}
 	}
-	err = writeFile.Close()
-	writeFile = nil
-	if err != nil {
-		return err
-	}
-	canRetry = true
-retryRename:
-	err = os.Rename(writePathTmp, writePath)
-	if err != nil {
-		// writePath already exists (stale tmp or leftover dir): remove and retry once.
-		if errors.Is(err, fs.ErrExist) && canRetry && os.Remove(writePath) == nil {
-			canRetry = false
-			goto retryRename
-		}
-		return err
-	}
-	return nil
+	return writeFile.Close()
 }
