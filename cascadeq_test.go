@@ -1379,6 +1379,9 @@ func TestCorruptedFiles(t *testing.T) {
 	}
 	rdn = getAll(t, rdn, q)
 
+	t.Log("Testing data file corrupted by being replaced by directory")
+	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
+
 	// Corrupt file by replacing it with directory of same name.
 	t.Log("writing 64 items to queue")
 	wrn = putN(t, 64, wrn, q)
@@ -1387,7 +1390,7 @@ func TestCorruptedFiles(t *testing.T) {
 		t.Fatal("expected 2 files saved, got", len(stats.Files))
 	}
 	corrupt = filepath.Join(dir, stats.Files[0])
-	t.Log("corrupting fail by replacing it with directory:", corrupt)
+	t.Log("corrupting file by replacing it with directory:", corrupt)
 	err = os.Remove(corrupt)
 	if err != nil {
 		panic(err)
@@ -1451,9 +1454,6 @@ func TestCorruptedFiles(t *testing.T) {
 	}
 
 	os.Remove(rename)
-
-	t.Log("Testing data file corrupted by being replaced by directory")
-	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
 
 	t.Log("Testing that snapshots are removed when all files are consumed")
 	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(100*time.Millisecond))
