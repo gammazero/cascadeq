@@ -291,7 +291,7 @@ func (q *Queue) Out() <-chan []byte {
 }
 
 // Put writes a []byte to the queue.
-func (q *Queue) Put(item []byte) (err error) {
+func (q *Queue) Put(item []byte) error {
 	if item == nil {
 		return nil
 	}
@@ -310,7 +310,7 @@ func (q *Queue) Put(item []byte) (err error) {
 
 	rsp := q.rspErrPool.Get().(chan error)
 	q.input <- putReq{item: item, rsp: rsp}
-	err = <-rsp
+	err := <-rsp
 	q.rspErrPool.Put(rsp)
 	return err
 }
