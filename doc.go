@@ -20,7 +20,7 @@
 // Create a Queue with New, write items with Put or PutBatch, and consume them
 // via the channel returned by Out or by calling Drain:
 //
-//	q, err := cascadeq.New("myqueue", "/var/data/queues")
+//	q, err := cascadeq.New("/var/data/queues/myqueue")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -69,7 +69,7 @@
 // # Persistence and file format
 //
 // Overflow files are written to the directory supplied to New and named
-// {name}-{hexnum}.dat (or .dat.gz when compression is enabled). Each file is a
+// cq-{hexnum}.dat (or .dat.gz when compression is enabled). Each file is a
 // sequence of big-endian int32 length-prefixed byte records. File number 0 is
 // reserved for the headQ snapshot written on close or idle snapshot; higher
 // numbers are sequential tailQ overflow files. On restart, New re-discovers

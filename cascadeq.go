@@ -32,9 +32,10 @@ const (
 const (
 	BadFileExt = ".bad"
 
-	fileExt = ".dat"
-	gzipExt = ".gz"
-	pkgName = "cascadeq"
+	fileExt    = ".dat"
+	filePrefix = "cq-"
+	gzipExt    = ".gz"
+	pkgName    = "cascadeq"
 )
 
 // ErrClosed is returned when I/O is attempted on a closed Queue.
@@ -171,11 +172,10 @@ func WithSnapshotInterval(d time.Duration) func(*Queue) {
 	}
 }
 
-// New creates a new file-backed FIFO queue instance.
-func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
-	if name == "" {
-		return nil, errors.New("queue name not specified")
-	}
+// New creates a new file-backed FIFO queue instance. Files for this queue are
+// stored in the specified directory. A queue that stores different items must
+// use a different directory.
+func New(dir string, options ...func(*Queue)) (*Queue, error) {
 	if dir == "" {
 		return nil, errors.New("directory not specified")
 	}
@@ -193,8 +193,8 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 		maxMemItems: DefaultMaxMemItems,
 		maxItemSize: DefaultMaxItemSize,
 
-		name:         name,
 		dir:          dir,
+		name:         filepath.Base(dir),
 		done:         make(chan struct{}),
 		input:        make(chan putReq),
 		drainReqChan: make(chan drainReq),
@@ -216,7 +216,7 @@ func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
 	if q.logger == nil {
 		handler := slog.NewJSONHandler(os.Stderr, nil)
 		attrs := []slog.Attr{
-			slog.String(pkgName, name),
+			slog.String(pkgName, q.name),
 		}
 		q.logger = slog.New(handler.WithAttrs(attrs))
 	}
@@ -286,7 +286,8 @@ func (q *Queue) Empty() <-chan struct{} {
 	return q.empty
 }
 
-// Name returns the name of the Queue instance.
+// Name returns the base of the directory path of this Queue, which serves as
+// the queue's name.
 func (q *Queue) Name() string {
 	return q.name
 }
@@ -668,7 +669,6 @@ func (q *Queue) readQueueDir() error {
 	if len(entries) == 0 {
 		return nil
 	}
-	filePrefix := q.name + "-"
 
 	files := make([]int64, 0, len(entries))
 	for _, ent := range entries {
@@ -697,9 +697,8 @@ func (q *Queue) readQueueDir() error {
 }
 
 func (q *Queue) makeFileName(fileNum int64) string {
-	b := make([]byte, 0, len(q.name)+1+16+len(fileExt)+len(gzipExt))
-	b = append(b, q.name...)
-	b = append(b, '-')
+	b := make([]byte, 0, len(filePrefix)+16+len(fileExt)+len(gzipExt))
+	b = append(b, filePrefix...)
 	b = strconv.AppendInt(b, fileNum, 16)
 	b = append(b, fileExt...)
 	if q.gzip {
