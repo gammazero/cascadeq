@@ -669,7 +669,6 @@ func (q *Queue) readQueueDir() error {
 	if len(entries) == 0 {
 		return nil
 	}
-	filePrefix := "cq-"
 
 	files := make([]int64, 0, len(entries))
 	for _, ent := range entries {
