@@ -70,6 +70,7 @@ func TestBadSaveDir(t *testing.T) {
 	}
 
 	_, err = cascadeq.New("test", "~not-a-user-0932488/foo")
+	t.Log("err:", err)
 	if err == nil {
 		t.Fatal("expected error - unexpandable user")
 	}
@@ -169,10 +170,18 @@ func TestBadSizeLimits(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on backwards item size limits")
 	}
+	expect := "minimum item size must be less than maximum"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatalf("expected error %q got %q", expect, err)
+	}
 
 	_, err = cascadeq.New("test", dir, cascadeq.WithMinItemSize(64), cascadeq.WithMaxMemory(63))
 	if err == nil {
 		t.Fatal("expected error on min item size > max memory size")
+	}
+	expect = "too small for minimum item size"
+	if !strings.Contains(err.Error(), expect) {
+		t.Fatalf("expected error to contain %q got %q", expect, err)
 	}
 }
 
