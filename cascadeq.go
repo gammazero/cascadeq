@@ -173,6 +173,12 @@ func WithSnapshotInterval(d time.Duration) func(*Queue) {
 
 // New creates a new file-backed FIFO queue instance.
 func New(name, dir string, options ...func(*Queue)) (*Queue, error) {
+	if name == "" {
+		return nil, errors.New("queue name not specified")
+	}
+	if dir == "" {
+		return nil, errors.New("directory not specified")
+	}
 	var err error
 	dir, err = fsutil.ExpandHome(filepath.Clean(dir))
 	if err != nil {

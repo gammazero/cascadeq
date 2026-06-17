@@ -22,7 +22,21 @@ import (
 )
 
 func TestBadSaveDir(t *testing.T) {
+	q, err := cascadeq.New("test", "")
+	if err == nil {
+		t.Fatal("expected error on unspecified dir")
+	}
+	if q != nil {
+		t.Fatal("expected nil queue")
+	}
+
 	dir := t.TempDir()
+
+	_, err = cascadeq.New("", dir)
+	if err == nil {
+		t.Fatal("expected error on unspecified name")
+	}
+
 	file, err := os.CreateTemp(dir, "somefile")
 	if err != nil {
 		panic("cannot create temp file")
@@ -32,7 +46,7 @@ func TestBadSaveDir(t *testing.T) {
 	}
 	defer os.Remove(file.Name())
 
-	q, err := cascadeq.New("test", file.Name())
+	q, err = cascadeq.New("test", file.Name())
 	if err == nil {
 		t.Fatal("expected error on bad dir")
 	}
@@ -150,12 +164,13 @@ func TestDisappearingOverflowDir(t *testing.T) {
 }
 
 func TestBadSizeLimits(t *testing.T) {
-	_, err := cascadeq.New("test", "", cascadeq.WithMinItemSize(10), cascadeq.WithMaxItemSize(2))
+	dir := t.TempDir()
+	_, err := cascadeq.New("test", dir, cascadeq.WithMinItemSize(10), cascadeq.WithMaxItemSize(2))
 	if err == nil {
 		t.Fatal("expected error on backwards item size limits")
 	}
 
-	_, err = cascadeq.New("test", "", cascadeq.WithMinItemSize(64), cascadeq.WithMaxMemory(63))
+	_, err = cascadeq.New("test", dir, cascadeq.WithMinItemSize(64), cascadeq.WithMaxMemory(63))
 	if err == nil {
 		t.Fatal("expected error on min item size > max memory size")
 	}
