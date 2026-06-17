@@ -22,7 +22,9 @@ import (
 )
 
 func TestBadSaveDir(t *testing.T) {
-	q, err := cascadeq.New("test", "")
+	t.Parallel()
+
+	q, err := cascadeq.New("")
 	if err == nil {
 		t.Fatal("expected error on unspecified dir")
 	}
@@ -31,12 +33,6 @@ func TestBadSaveDir(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-
-	_, err = cascadeq.New("", dir)
-	if err == nil {
-		t.Fatal("expected error on unspecified name")
-	}
-
 	file, err := os.CreateTemp(dir, "somefile")
 	if err != nil {
 		panic("cannot create temp file")
@@ -46,7 +42,7 @@ func TestBadSaveDir(t *testing.T) {
 	}
 	defer os.Remove(file.Name())
 
-	q, err = cascadeq.New("test", file.Name())
+	q, err = cascadeq.New(file.Name())
 	if err == nil {
 		t.Fatal("expected error on bad dir")
 	}
@@ -54,7 +50,7 @@ func TestBadSaveDir(t *testing.T) {
 		t.Fatal("New should return nil queue on error")
 	}
 
-	q, err = cascadeq.New("test", filepath.Join(dir, "not-a-dir"))
+	q, err = cascadeq.New(filepath.Join(dir, "not-a-dir"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +65,7 @@ func TestBadSaveDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = cascadeq.New("test", "~not-a-user-0932488/foo")
+	_, err = cascadeq.New("~not-a-user-0932488/foo")
 	t.Log("err:", err)
 	if err == nil {
 		t.Fatal("expected error - unexpandable user")
@@ -79,7 +75,7 @@ func TestBadSaveDir(t *testing.T) {
 		t.Fatalf("expected error %q got %q", expect, err)
 	}
 
-	_, err = cascadeq.New("test", filepath.Join(dir, "no-such-dir", "my-queue-dir"))
+	_, err = cascadeq.New(filepath.Join(dir, "no-such-dir", "my-queue"))
 	if err == nil {
 		t.Fatal("expected error - no such directory")
 	}
@@ -94,7 +90,7 @@ func TestBadSaveDir(t *testing.T) {
 		panic(err)
 	}
 	defer os.Remove(wrOnlyDir)
-	_, err = cascadeq.New("test", wrOnlyDir)
+	_, err = cascadeq.New(wrOnlyDir)
 	if err == nil {
 		t.Fatal("expected error - permission denied")
 	}
@@ -105,11 +101,13 @@ func TestBadSaveDir(t *testing.T) {
 }
 
 func TestDisappearingOverflowDir(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	disappearDir := filepath.Join(dir, "disappear")
 
 	// Test save directory removed after startup/
-	q, err := cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+	q, err := cascadeq.New(disappearDir, cascadeq.WithMaxMemItems(32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +125,7 @@ func TestDisappearingOverflowDir(t *testing.T) {
 
 	// Test save directory removed between save and load.
 	disappearDir = filepath.Join(dir, "disappear2")
-	q, err = cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+	q, err = cascadeq.New(disappearDir, cascadeq.WithMaxMemItems(32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +133,7 @@ func TestDisappearingOverflowDir(t *testing.T) {
 	if err = q.Close(); err != nil {
 		t.Fatal(err)
 	}
-	q, err = cascadeq.New("test", disappearDir, cascadeq.WithMaxMemItems(32))
+	q, err = cascadeq.New(disappearDir, cascadeq.WithMaxMemItems(32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +164,7 @@ func TestDisappearingOverflowDir(t *testing.T) {
 
 func TestBadSizeLimits(t *testing.T) {
 	dir := t.TempDir()
-	_, err := cascadeq.New("test", dir, cascadeq.WithMinItemSize(10), cascadeq.WithMaxItemSize(2))
+	_, err := cascadeq.New(dir, cascadeq.WithMinItemSize(10), cascadeq.WithMaxItemSize(2))
 	if err == nil {
 		t.Fatal("expected error on backwards item size limits")
 	}
@@ -175,7 +173,7 @@ func TestBadSizeLimits(t *testing.T) {
 		t.Fatalf("expected error %q got %q", expect, err)
 	}
 
-	_, err = cascadeq.New("test", dir, cascadeq.WithMinItemSize(64), cascadeq.WithMaxMemory(63))
+	_, err = cascadeq.New(dir, cascadeq.WithMinItemSize(64), cascadeq.WithMaxMemory(63))
 	if err == nil {
 		t.Fatal("expected error on min item size > max memory size")
 	}
@@ -186,9 +184,11 @@ func TestBadSizeLimits(t *testing.T) {
 }
 
 func TestBadFileNames(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
-	for _, name := range []string{"somefile", "somefile.dat", "test-somefile.dat"} {
+	for _, name := range []string{"somefile", "somefile.dat", "cq-somefile.dat"} {
 		file, err := os.Create(filepath.Join(dir, name))
 		if err != nil {
 			panic("cannot create temp file")
@@ -206,10 +206,12 @@ func TestBadFileNames(t *testing.T) {
 }
 
 func TestUnwritableFile(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
 
-	name := filepath.Join(q.Dir(), "test-1.dat")
+	name := filepath.Join(q.Dir(), "cq-1.dat")
 	blockFile, err := os.OpenFile(name, os.O_RDONLY|os.O_CREATE|os.O_EXCL, 0400)
 	if err != nil {
 		panic(err)
@@ -228,10 +230,13 @@ func TestUnwritableFile(t *testing.T) {
 }
 
 func TestBasicOperation(t *testing.T) {
-	dir := t.TempDir()
+	t.Parallel()
+
+	const qname = "my-queue"
+	dir := filepath.Join(t.TempDir(), qname)
 	q := makeQueue(t, dir, cascadeq.WithMinItemSize(2), cascadeq.WithMaxItemSize(10))
 
-	if q.Name() != "test" {
+	if q.Name() != qname {
 		t.Fatal("wrong name")
 	}
 	if q.Dir() != dir {
@@ -252,7 +257,7 @@ func TestBasicOperation(t *testing.T) {
 	select {
 	case <-q.Out():
 		t.Fatal("nothing should be in queue")
-	case <-time.After(time.Millisecond):
+	case <-q.Empty():
 	}
 
 	// Check item size limits.
@@ -275,10 +280,6 @@ func TestBasicOperation(t *testing.T) {
 		t.Log("Put", msg)
 	}
 
-	timer := time.AfterFunc(time.Second, func() {
-		q.Close()
-	})
-
 	var count int
 loop:
 	for {
@@ -294,7 +295,6 @@ loop:
 			break loop
 		}
 	}
-	timer.Stop()
 
 	for count < len(msgs) {
 		t.Fatal("did not get all expected items")
@@ -337,6 +337,8 @@ loop:
 // must receive its own result, and every enqueued item must come back out
 // exactly once. Run with -race to catch concurrent access to queue state.
 func TestConcurrentPut(t *testing.T) {
+	t.Parallel()
+
 	const (
 		writers     = 8
 		perWriter   = 250
@@ -374,6 +376,8 @@ func TestConcurrentPut(t *testing.T) {
 }
 
 func TestPutBatch(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
 
@@ -455,7 +459,7 @@ func TestPutBatch(t *testing.T) {
 	}
 
 	// ErrClosed after Close.
-	q2, err := cascadeq.New("test2", t.TempDir())
+	q2, err := cascadeq.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,6 +470,8 @@ func TestPutBatch(t *testing.T) {
 }
 
 func TestDrain(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	maxQ := maxMemItems / 2 // 16: items per half-queue
 
@@ -581,7 +587,7 @@ func TestDrain(t *testing.T) {
 	}
 
 	// Drain returns 0 after Close.
-	q2, err := cascadeq.New("test2", t.TempDir())
+	q2, err := cascadeq.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,11 +614,13 @@ func TestAlternativeLogger(t *testing.T) {
 	logMsg := b.String()
 	const expect = "queueName=my-test-queue"
 	if !strings.Contains(logMsg, expect) {
-		t.Fatalf("expected to see %q in log message", expect)
+		t.Fatalf("expected to see %q in log message, got %q", expect, logMsg)
 	}
 }
 
 func TestLoggedErrors(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	logOpts := slog.HandlerOptions{
 		AddSource: true,
@@ -627,7 +635,7 @@ func TestLoggedErrors(t *testing.T) {
 	if len(stats.Files) != 1 {
 		t.Fatal("should have overflow file")
 	}
-	fname := "test-2.dat"
+	fname := "cq-2.dat"
 	dirName := filepath.Join(q.Dir(), fname)
 
 	// Create a directory with a file, so that trying to remove a snapshot by that name fails.
@@ -654,7 +662,7 @@ func TestLoggedErrors(t *testing.T) {
 	if !strings.Contains(logMsg, expect) {
 		t.Fatal("did not find expected content in log:", expect)
 	}
-	expect = "test-2.dat: directory not empty"
+	expect = "cq-2.dat: directory not empty"
 	if !strings.Contains(logMsg, expect) {
 		t.Fatal("did not find expected content in log:", expect)
 	}
@@ -670,6 +678,8 @@ func TestLoggedErrors(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	dir := t.TempDir()
 
@@ -720,7 +730,7 @@ func TestClear(t *testing.T) {
 	if len(stats.Files) != 1 {
 		t.Fatal("should have 1 file, have", len(stats.Files))
 	}
-	dirName := filepath.Join(q.Dir(), "test-1.dat")
+	dirName := filepath.Join(q.Dir(), "cq-1.dat")
 	err = os.Remove(dirName)
 	if err != nil {
 		panic(err)
@@ -740,7 +750,7 @@ func TestClear(t *testing.T) {
 	file.Close()
 	defer os.Remove(file.Name())
 
-	dirName = filepath.Join(q.Dir(), "test-2.dat")
+	dirName = filepath.Join(q.Dir(), "cq-2.dat")
 	err = os.Mkdir(dirName, 0750)
 	if err != nil {
 		panic(err)
@@ -758,19 +768,20 @@ func TestClear(t *testing.T) {
 	if err == nil {
 		t.Fatal("expect error")
 	}
-	expect := "test-1.dat: directory not empty"
+	expect := "cq-1.dat: directory not empty"
 	if !strings.Contains(err.Error(), expect) {
 		t.Fatal("did not get expected log message:", expect)
 	}
-	expect = "test-2.dat: directory not empty"
+	expect = "cq-2.dat: directory not empty"
 	if !strings.Contains(err.Error(), expect) {
 		t.Fatal("did not get expected log message:", expect)
 	}
 }
 
 func TestOrderAcrossSave(t *testing.T) {
-	dir := t.TempDir()
+	t.Parallel()
 
+	dir := t.TempDir()
 	q := makeQueue(t, dir)
 	t.Log("Created new queue")
 
@@ -817,20 +828,20 @@ func TestOrderAcrossSave(t *testing.T) {
 		t.Log("Put", msg)
 	}
 
-	timer := time.AfterFunc(time.Second, func() {
-		q.Close()
-	})
-
 	var count int
-	for data := range q.Out() {
-		msg := string(data)
-		t.Log("Get", msg)
-		if msg != msgs[count] {
-			t.Fatalf("%s is not equal to %s", msg, msgs[count])
+	for done := false; !done; {
+		select {
+		case data := <-q.Out():
+			msg := string(data)
+			t.Log("Get", msg)
+			if msg != msgs[count] {
+				t.Fatalf("%s is not equal to %s", msg, msgs[count])
+			}
+			count++
+		case <-q.Empty():
+			done = true
 		}
-		count++
 	}
-	timer.Stop()
 
 	for count < len(msgs) {
 		t.Fatal("did not get all expected items")
@@ -838,6 +849,8 @@ func TestOrderAcrossSave(t *testing.T) {
 }
 
 func TestGzipOnOffAcrossSave(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(maxMemItems))
 
@@ -892,6 +905,8 @@ func logStats(t *testing.T, stats cascadeq.Stats) {
 }
 
 func TestChangeSizeAcrossSave(t *testing.T) {
+	t.Parallel()
+
 	const (
 		smallLimit = 32
 		bigLimit   = 256
@@ -920,23 +935,21 @@ func TestChangeSizeAcrossSave(t *testing.T) {
 	logStats(t, q.Stats())
 
 	var count int
-	timeout := time.After(time.Second)
 	for done := false; !done; {
 		select {
 		case data := <-q.Out():
 			msg := string(data)
-			//t.Log("Got", msg)
 			expect := fmt.Sprintf("%04d", count)
 			if msg != expect {
 				t.Fatalf("%s is not equal to %s", msg, expect)
 			}
 			count++
-		case <-timeout:
+		case <-q.Empty():
 			done = true
 		}
 	}
 	for count != msgCount {
-		t.Fatalf("did not get all expected items, expexted %d, got %d", msgCount, count)
+		t.Fatalf("did not get all expected items, expected %d, got %d", msgCount, count)
 	}
 
 	// Test saving to large files then reading into small memory queue.
@@ -955,7 +968,6 @@ func TestChangeSizeAcrossSave(t *testing.T) {
 	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(smallLimit))
 
 	count = 0
-	timeout = time.After(time.Second)
 	for done := false; !done; {
 		select {
 		case data := <-q.Out():
@@ -966,7 +978,7 @@ func TestChangeSizeAcrossSave(t *testing.T) {
 				t.Fatalf("%s is not equal to %s", msg, expect)
 			}
 			count++
-		case <-timeout:
+		case <-q.Empty():
 			done = true
 		}
 	}
@@ -986,6 +998,8 @@ func TestChangeSizeAcrossSave(t *testing.T) {
 }
 
 func TestAllIOLoop(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	dir := t.TempDir()
 
@@ -1204,6 +1218,8 @@ func TestAllIOLoop(t *testing.T) {
 }
 
 func TestMissingAndEmptyFiles(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	dir := t.TempDir()
 
@@ -1239,7 +1255,7 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 	}
 	defer os.Remove(name)
 	t.Log("replaced file", name, "with directory of same name")
-	_, err = cascadeq.New(q.Name(), dir)
+	_, err = cascadeq.New(dir)
 	if err == nil || !errors.Is(err, cascadeq.ErrIsDirectory) {
 		t.Fatalf("expected error %q, got %q", cascadeq.ErrIsDirectory, err)
 	}
@@ -1332,6 +1348,8 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 }
 
 func TestCorruptedFiles(t *testing.T) {
+	t.Parallel()
+
 	const maxMemItems = 32
 	dir := t.TempDir()
 	q := makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
@@ -1566,6 +1584,8 @@ func TestCorruptedFiles(t *testing.T) {
 }
 
 func TestReadAll(t *testing.T) {
+	t.Parallel()
+
 	const msgCount = 100
 	dir := t.TempDir()
 
@@ -1589,6 +1609,8 @@ func TestReadAll(t *testing.T) {
 }
 
 func TestFastWrSlowRdSlowWrFastRd(t *testing.T) {
+	t.Parallel()
+
 	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(32))
 	var rdn, wrn int
 
@@ -1612,6 +1634,8 @@ func TestFastWrSlowRdSlowWrFastRd(t *testing.T) {
 }
 
 func TestStress(t *testing.T) {
+	t.Parallel()
+
 	const count = 10000
 	items := randItems(10, 10, 60)
 
@@ -1684,9 +1708,7 @@ func TestStress(t *testing.T) {
 func BenchmarkStress(b *testing.B) {
 	items := randItems(10, 10, 60)
 
-	dir := b.TempDir()
-
-	q, err := cascadeq.New("test", dir,
+	q, err := cascadeq.New(b.TempDir(),
 		cascadeq.WithSnapshotInterval(time.Second),
 		cascadeq.WithMaxMemory(4096),
 		cascadeq.WithMaxMemItems(8192))
@@ -1736,6 +1758,8 @@ func BenchmarkStress(b *testing.B) {
 }
 
 func TestZeroLength(t *testing.T) {
+	t.Parallel()
+
 	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(32))
 	zeroBytes := []byte{}
 
@@ -1779,6 +1803,8 @@ func TestZeroLength(t *testing.T) {
 }
 
 func TestSnapshot(t *testing.T) {
+	t.Parallel()
+
 	const snapInterval = time.Second
 	const maxMemItems = 32
 	dir := t.TempDir()
@@ -1884,7 +1910,7 @@ func TestSnapshot(t *testing.T) {
 		q := makeQueue(t, dir, cascadeq.WithLogger(logger), cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(snapInterval))
 		putN(t, maxMemItems+(maxMemItems/2), 0, q)
 
-		dirName := filepath.Join(q.Dir(), "test-1.dat")
+		dirName := filepath.Join(q.Dir(), "cq-1.dat")
 		err := os.Remove(dirName)
 		if err != nil {
 			panic(err)
@@ -1902,7 +1928,7 @@ func TestSnapshot(t *testing.T) {
 		file.Close()
 		defer os.Remove(file.Name())
 
-		dirName = filepath.Join(q.Dir(), "test-2.dat")
+		dirName = filepath.Join(q.Dir(), "cq-2.dat")
 		err = os.Mkdir(dirName, 0750)
 		if err != nil {
 			panic(err)
@@ -1916,7 +1942,7 @@ func TestSnapshot(t *testing.T) {
 		file.Close()
 		defer os.Remove(file.Name())
 
-		dirName = filepath.Join(q.Dir(), "test-0.dat")
+		dirName = filepath.Join(q.Dir(), "cq-0.dat")
 		err = os.Mkdir(dirName, 0750)
 		if err != nil {
 			panic(err)
@@ -1958,10 +1984,8 @@ func BenchmarkFillEmpty(b *testing.B) {
 		msgs = append(msgs, []byte(fmt.Sprintf("%d", i)))
 	}
 
-	dir := b.TempDir()
-
 	// Test saving to small files then reading into larger memory queue.
-	q, err := cascadeq.New("test", dir, cascadeq.WithMaxMemItems(256))
+	q, err := cascadeq.New(b.TempDir(), cascadeq.WithMaxMemItems(256))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1985,11 +2009,8 @@ func BenchmarkFillEmpty(b *testing.B) {
 }
 
 func BenchmarkFastWrSlowRdSlowWrFastRd(b *testing.B) {
-	dir := b.TempDir()
-
 	// Test saving to small files then reading into larger memory queue.
-	q, err := cascadeq.New("test", dir, cascadeq.WithMaxMemItems(32))
-	//q, err := cascadeq.New("test", dir, cascadeq.WithMaxMemSize(4096))
+	q, err := cascadeq.New(b.TempDir(), cascadeq.WithMaxMemItems(32))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2054,7 +2075,7 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 		dir := b.TempDir()
 
 		for b.Loop() {
-			q, err := cascadeq.New("test", dir, cascadeq.WithMaxMemItems(maxItems))
+			q, err := cascadeq.New(dir, cascadeq.WithMaxMemItems(maxItems))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2066,7 +2087,7 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 			}
 			q.Close()
 
-			q, err = cascadeq.New("test", dir, cascadeq.WithMaxMemItems(maxItems))
+			q, err = cascadeq.New(dir, cascadeq.WithMaxMemItems(maxItems))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2084,7 +2105,7 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 		dir := b.TempDir()
 
 		for b.Loop() {
-			q, err := cascadeq.New("test", dir, cascadeq.WithMaxMemItems(maxItems))
+			q, err := cascadeq.New(dir, cascadeq.WithMaxMemItems(maxItems))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2096,7 +2117,7 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 			}
 			q.Close()
 
-			q, err = cascadeq.New("test", dir, cascadeq.WithMaxMemItems(maxItems))
+			q, err = cascadeq.New(dir, cascadeq.WithMaxMemItems(maxItems))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2112,7 +2133,7 @@ func BenchmarkLargeFilesGzipOffOn(b *testing.B) {
 }
 
 func BenchmarkPutMany(b *testing.B) {
-	q, err := cascadeq.New("put-many", b.TempDir())
+	q, err := cascadeq.New(b.TempDir())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2193,8 +2214,7 @@ func BenchmarkPut1048576(b *testing.B) {
 func benchmarkPut(size int64, b *testing.B) {
 	b.ReportAllocs()
 	qName := "bench_put" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
-	tmpDir := b.TempDir()
-	q, err := cascadeq.New(qName, tmpDir, cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(int(size)), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
+	q, err := cascadeq.New(filepath.Join(b.TempDir(), qName), cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(int(size)), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2243,8 +2263,7 @@ func benchmarkGet(size int64, b *testing.B) {
 	b.ReportAllocs()
 	b.StopTimer()
 	qName := "bench_get" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
-	tmpDir := b.TempDir()
-	q, err := cascadeq.New(qName, tmpDir, cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(int(size)), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
+	q, err := cascadeq.New(filepath.Join(b.TempDir(), qName), cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(int(size)), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2272,7 +2291,7 @@ func benchmarkDrain(batchSize int, b *testing.B) {
 	b.ReportAllocs()
 	b.StopTimer()
 	qName := "bench_drain" + strconv.Itoa(b.N) + strconv.Itoa(int(time.Now().Unix()))
-	q, err := cascadeq.New(qName, b.TempDir(), cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(itemSize), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
+	q, err := cascadeq.New(filepath.Join(b.TempDir(), qName), cascadeq.WithMaxMemItems(64), cascadeq.WithMaxItemSize(itemSize), cascadeq.WithMaxMemory(4*cascadeq.DefaultMaxMemory))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2293,7 +2312,7 @@ func benchmarkDrain(batchSize int, b *testing.B) {
 func makeQueue(t *testing.T, dir string, options ...func(*cascadeq.Queue)) *cascadeq.Queue {
 	t.Helper()
 
-	q, err := cascadeq.New("test", dir, options...)
+	q, err := cascadeq.New(dir, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

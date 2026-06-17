@@ -11,13 +11,13 @@ import (
 // Example_basic demonstrates creating a queue, writing items, and reading them
 // back until the queue is empty.
 func Example_basic() {
-	dir, err := os.MkdirTemp("", "cascadeq-example-*")
+	dir, err := os.MkdirTemp("", "cascadeq-example1-*")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
-	q, err := cascadeq.New("example", dir)
+	q, err := cascadeq.New(dir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,13 +45,13 @@ func Example_basic() {
 
 // Example_batch demonstrates PutBatch and Drain for high-throughput batch I/O.
 func Example_batch() {
-	dir, err := os.MkdirTemp("", "cascadeq-example-*")
+	dir, err := os.MkdirTemp("", "cascadeq-example2-*")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
-	q, err := cascadeq.New("example", dir)
+	q, err := cascadeq.New(dir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,13 +75,13 @@ func Example_batch() {
 
 // Example_options shows configuring memory limits and gzip compression.
 func Example_options() {
-	dir, err := os.MkdirTemp("", "cascadeq-example-*")
+	dir, err := os.MkdirTemp("", "cascadeq-example3-*")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
-	q, err := cascadeq.New("example", dir,
+	q, err := cascadeq.New(dir,
 		cascadeq.WithMaxMemory(64*1024),  // 64 KiB in-memory budget
 		cascadeq.WithMaxMemItems(128),    // at most 128 items in memory
 		cascadeq.WithMaxItemSize(4*1024), // reject items larger than 4 KiB

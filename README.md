@@ -37,7 +37,7 @@ import (
 )
 
 func main() {
-    q, err := cascadeq.New("myqueue", "/tmp/myqueue")
+    q, err := cascadeq.New("/tmp/myqueue")
     if err != nil {
         log.Fatal(err)
     }
@@ -119,7 +119,7 @@ Items are consumed from the front of headQ. When headQ empties:
 
 ### File format and naming
 
-Files are stored in the directory passed to `New` and named `{name}-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `int32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted.
+Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `int32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted.
 
 ### Single-goroutine event loop
 
