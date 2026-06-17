@@ -40,7 +40,7 @@ const (
 // ErrClosed is returned when I/O is attempted on a closed Queue.
 var ErrClosed = errors.New("closed")
 
-// ErrIsDirectory is returned when trying to read a queue file this is a
+// ErrIsDirectory is returned when trying to read a queue file that is a
 // directory.
 var ErrIsDirectory = errors.New("queue file is a directory")
 
