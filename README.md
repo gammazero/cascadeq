@@ -118,11 +118,11 @@ Items are consumed from the front of headQ. When headQ empties:
 
 ### File format and naming
 
-Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `int32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted.
+Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `uint32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted. The gzip option can be toggled between runs without losing data: when loading, if a file is not found under the current setting, the opposite extension is tried.
 
 ### Single-goroutine event loop
 
-All state mutation happens inside one goroutine via a `select` over the input channel (Put), output channel (Out), clear and stats request channels, the empty signal channel, an optional snapshot ticker, and the close signal. A single `sync.RWMutex` only protects the `closed` flag, gating `Put`/`Clear`/`Stats` from racing with `Close`. No other synchronization is needed.
+All state mutation happens inside one goroutine via a `select` over the input channel (Put and PutBatch), output channel (Out), drain, clear, and stats request channels, the empty signal channel, an optional snapshot ticker, and the close signal. A single `sync.RWMutex` only protects the `closed` flag, gating `Put`/`PutBatch`/`Drain`/`Clear`/`Stats` from racing with `Close`. No other synchronization is needed.
 
 ### Snapshot feature
 

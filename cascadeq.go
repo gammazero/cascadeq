@@ -110,7 +110,8 @@ func WithGzip(enable bool) func(*Queue) {
 }
 
 // WithLogger sets the slog.Logger instance to use for logging. This replaces
-// the default cascadeq slog.Logger with a JSON handler that writes to stderr.
+// the default cascadeq slog.Logger, which writes JSON to stderr. A nil logger
+// is ignored, leaving the default in place.
 func WithLogger(logger *slog.Logger) func(*Queue) {
 	return func(q *Queue) {
 		if logger != nil {
@@ -130,7 +131,9 @@ func WithMaxMemory(maxBytes int) func(*Queue) {
 }
 
 // WithMaxMemItems sets the maximum number of items that the queue keeps in
-// memory before items are written to disk.
+// memory before items are written to disk. The value is rounded up to the
+// next power of two, so the effective limit may be larger than requested.
+// The effective limit is never less than 32.
 func WithMaxMemItems(maxItems int) func(*Queue) {
 	return func(q *Queue) {
 		if maxItems > 0 {
@@ -297,7 +300,8 @@ func (q *Queue) Out() <-chan []byte {
 	return q.output
 }
 
-// Put writes a []byte to the queue.
+// Put writes a []byte to the queue. A nil item is ignored and returns nil
+// without being enqueued.
 func (q *Queue) Put(item []byte) error {
 	if item == nil {
 		return nil
@@ -323,8 +327,9 @@ func (q *Queue) Put(item []byte) error {
 }
 
 // PutBatch enqueues all items in a single event-loop visit. If items is nil or
-// empty, it returns nil immediately. Returns the first size-validation error
-// encountered; items before the invalid one are already enqueued.
+// empty, it returns nil immediately. Nil items are skipped. Returns the first
+// error encountered, whether from size validation or from writing overflow to
+// disk; items before the failing one are already enqueued.
 func (q *Queue) PutBatch(items [][]byte) error {
 	if len(items) == 0 {
 		return nil
