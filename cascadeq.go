@@ -947,10 +947,7 @@ func (q *Queue) saveToFile(writePath string, memQ *deque.Deque[[]byte], sync boo
 		return err
 	}
 	if sync {
-		err = writeFile.Sync()
-		if err != nil {
-			return err
-		}
+		return writeFile.CloseSync()
 	}
 	return writeFile.Close()
 }
