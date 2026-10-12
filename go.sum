@@ -1,4 +1,4 @@
-github.com/gammazero/deque v1.2.1 h1:9fnQVFCCZ9/NOc7ccTNqzoKd1tCWOqeI05/lPqFPMGQ=
-github.com/gammazero/deque v1.2.1/go.mod h1:5nSFkzVm+afG9+gy0VIowlqVAW4N8zNcMne+CMQVD2g=
-github.com/gammazero/fsutil v0.4.0 h1:7BlI6T9O9xt/s/m01ICiQvDnzSdcaeYrvEwEWMvYtJw=
-github.com/gammazero/fsutil v0.4.0/go.mod h1:JnD8cGUH5CidMtJoyontWS0RO6TuHcoubqskc76Xq2I=
+github.com/gammazero/deque v1.2.2 h1:zD+4g/JzU5MdHWiPzMeG7OeFW5plbhYKqHfSNDnQ3E8=
+github.com/gammazero/deque v1.2.2/go.mod h1:b0Hd32YGkBkCvq+lAX5i2bKhsBc9AJNZvv4vqNqsvJc=
+github.com/gammazero/fsutil v0.4.1 h1:R/TX7/lH7QNcz4NzvPqAqivP6PhhH4PZJVk1Nd27Jxc=
+github.com/gammazero/fsutil v0.4.1/go.mod h1:poXPhuADnV7is/fgu0fgCUgg5+rdIx79guF04zHDJ2A=
