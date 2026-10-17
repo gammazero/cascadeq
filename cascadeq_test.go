@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -206,11 +206,13 @@ func TestReadWaitsForFailedWrite(t *testing.T) {
 
 	// Large incompressible items make the gzip write slow, so the write is still in
 	// progress when the Drain below needs the file.
-	r := rand.New(rand.NewSource(1))
+	var seed [32]byte
+	copy(seed[:], "TestReadWaitsForFailedWrit-seed")
+	cc8 := rand.NewChaCha8(seed)
 	items := make([][]byte, itemCount)
 	for i := range items {
 		item := make([]byte, itemSize)
-		r.Read(item)
+		cc8.Read(item)
 		copy(item, fmt.Sprintf("%06d", i))
 		items[i] = item
 	}
@@ -255,6 +257,12 @@ func TestReadWaitsForFailedWrite(t *testing.T) {
 //
 // The test runs in a synctest bubble, so the idle snapshot happens without real
 // waiting, and no snapshot can happen while the test is not blocked.
+//
+// The test races the writer goroutine twice: the temp file must be deleted
+// before the write finishes, and file 1 must be loaded before the event loop
+// handles the failure. Both races are nearly always won because each write is
+// slow, but losing one is not a queue error, so the scenario is then retried in
+// a new queue.
 func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -263,121 +271,175 @@ func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 			itemCount    = 49
 			itemSize     = 512 * 1024
 			snapInterval = time.Second
+			maxAttempts  = 10
 		)
-		dir := t.TempDir()
-		var logBuf strings.Builder
-		logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-		opts := []func(*cascadeq.Queue){
-			cascadeq.WithGzip(true), cascadeq.WithMaxMemItems(32),
-			cascadeq.WithMaxItemSize(itemSize), cascadeq.WithMaxMemory(64 * 1024 * 1024),
-			cascadeq.WithSnapshotInterval(snapInterval), cascadeq.WithLogger(logger),
-		}
-		q, err := cascadeq.New(dir, opts...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer q.Close()
 
 		// Large incompressible items make each gzip overflow write slow.
-		r := rand.New(rand.NewSource(1))
+		var seed [32]byte
+		copy(seed[:], "TestFailedWriteRemovesStaleSnapshot")
+		cc8 := rand.NewChaCha8(seed)
 		items := make([][]byte, itemCount)
 		for i := range items {
 			item := make([]byte, itemSize)
-			r.Read(item)
+			cc8.Read(item)
 			copy(item, fmt.Sprintf("%06d", i))
 			items[i] = item
 		}
-		var wrn, rdn int
-		put := func(n int) {
-			for range n {
-				if err := q.Put(items[wrn]); err != nil {
+
+		// attempt runs the scenario once in a new queue directory. It returns false,
+		// after closing the queue, if the test lost a race with the writer goroutine.
+		attempt := func() bool {
+			dir := t.TempDir()
+			var logBuf syncBuffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+			opts := []func(*cascadeq.Queue){
+				cascadeq.WithGzip(true), cascadeq.WithMaxMemItems(32),
+				cascadeq.WithMaxItemSize(itemSize), cascadeq.WithMaxMemory(64 * 1024 * 1024),
+				cascadeq.WithSnapshotInterval(snapInterval), cascadeq.WithLogger(logger),
+			}
+			q, err := cascadeq.New(dir, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retry := func(reason string) bool {
+				t.Log("retrying:", reason)
+				if err := q.Close(); err != nil {
 					t.Fatal(err)
 				}
-				wrn++
+				return false
 			}
-		}
-		drain := func(n int) {
-			dst := make([][]byte, n)
-			got := q.Drain(dst)
-			for _, item := range dst[:got] {
-				if !bytes.Equal(item, items[rdn]) {
-					t.Fatalf("item %d does not match, got prefix %q", rdn, item[:6])
-				}
-				rdn++
-			}
-		}
 
-		// Items 0-15 fill the head queue and 16-31 fill the tail queue. Item 32 starts
-		// the write of items 16-31 to file 1, which succeeds.
-		put(33)
-		if stats := q.Stats(); len(stats.Files) != 1 {
-			t.Fatalf("expected 1 overflow file, got %v", stats.Files)
-		}
-
-		// While idle, the queue snapshots the tail queue (item 32) to file 2.
-		time.Sleep(2 * snapInterval)
-		synctest.Wait()
-		snapPath := filepath.Join(dir, "cq-2.dat.gz")
-		snapInfo, err := os.Stat(snapPath)
-		if err != nil {
-			t.Fatalf("expected tail snapshot: %v", err)
-		}
-
-		// Items 33-47 fill the tail queue and item 48 starts the write of items 32-47
-		// to file 2. Delete its temp file as soon as it appears, so that the write
-		// fails at its final rename and leaves the tail snapshot in place.
-		// This polls without sleeping, because the writer goroutine is doing file I/O
-		// and fake time does not advance until it is done. If the snapshot changes, the
-		// write finished before its temp file could be deleted.
-		put(16)
-		for deleted := false; !deleted; {
-			tmpFiles, _ := filepath.Glob(snapPath + "-*")
-			for _, name := range tmpFiles {
-				if os.Remove(name) == nil {
-					deleted = true
+			var wrn, rdn int
+			put := func(n int) {
+				for range n {
+					if err := q.Put(items[wrn]); err != nil {
+						t.Fatal(err)
+					}
+					wrn++
 				}
 			}
-			if fi, err := os.Stat(snapPath); err != nil || !os.SameFile(fi, snapInfo) {
-				t.Fatal("write of file 2 replaced the snapshot before its temp file was deleted")
+			drain := func(n int) {
+				dst := make([][]byte, n)
+				got := q.Drain(dst)
+				for _, item := range dst[:got] {
+					if !bytes.Equal(item, items[rdn]) {
+						t.Fatalf("item %d does not match, got prefix %q", rdn, item[:6])
+					}
+					rdn++
+				}
 			}
-			runtime.Gosched()
+
+			// Items 0-15 fill the head queue and 16-31 fill the tail queue. Item 32 starts
+			// the write of items 16-31 to file 1, which succeeds.
+			put(33)
+			if stats := q.Stats(); len(stats.Files) != 1 {
+				t.Fatalf("expected 1 overflow file, got %v", stats.Files)
+			}
+
+			// While idle, the queue snapshots the tail queue (item 32) to file 2.
+			time.Sleep(2 * snapInterval)
+			synctest.Wait()
+			snapPath := filepath.Join(dir, "cq-2.dat.gz")
+			snapInfo, err := os.Stat(snapPath)
+			if err != nil {
+				t.Fatalf("expected tail snapshot: %v", err)
+			}
+
+			// Items 33-47 fill the tail queue and item 48 starts the write of items 32-47
+			// to file 2. Delete its temp file as soon as it appears. Once the delete
+			// succeeds, the write has not been renamed into place and its final rename must
+			// fail, so the snapshot is checked only before each delete. This polls without
+			// sleeping, because the writer goroutine is doing file I/O and fake time does
+			// not advance until it is done.
+			put(16)
+			for {
+				fi, err := os.Stat(snapPath)
+				if err != nil {
+					t.Fatalf("tail snapshot removed before the write of file 2 failed: %v", err)
+				}
+				if !os.SameFile(fi, snapInfo) {
+					return retry("write of file 2 finished before its temp file was deleted")
+				}
+				tmpFiles, _ := filepath.Glob(snapPath + "-*")
+				if slices.ContainsFunc(tmpFiles, func(name string) bool { return os.Remove(name) == nil }) {
+					break
+				}
+				runtime.Gosched()
+			}
+
+			// Read the head queue and the first item of file 1. This loads and removes file
+			// 1 without waiting for the write of file 2.
+			drain(17)
+
+			// Only the event loop handles the write result, and it logs the failure before
+			// serving the next request. If the failure is not logged yet, file 1 was loaded
+			// while file 2 was still queued, so the failure leaves no queue files and
+			// refillHead's stale snapshot cleanup never runs for file 2. If it is logged,
+			// that cleanup removes the snapshot when file 1 is loaded, and the test would
+			// pass without checking writeComplete.
+			if strings.Contains(logBuf.String(), "failed to write overflow file") {
+				return retry("write of file 2 failed before file 1 was loaded")
+			}
+
+			// Wait for the write of file 2 to fail. Its items return to the tail queue.
+			stats := q.Stats()
+			if !strings.Contains(logBuf.String(), "failed to write overflow file") {
+				t.Fatal("expected write of file 2 to fail")
+			}
+			if len(stats.Files) != 0 || stats.TailQLen != 17 {
+				t.Fatalf("expected no files and 17 tail items, got files %v and %d tail items", stats.Files, stats.TailQLen)
+			}
+
+			// Read everything else, leaving the queue empty, and close it.
+			drain(itemCount)
+			if rdn != wrn {
+				t.Fatalf("read %d items, wrote %d", rdn, wrn)
+			}
+			if err = q.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			// After reopening, the queue must be empty and not replay any item.
+			q, err = cascadeq.New(dir, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dst := make([][]byte, itemCount)
+			if n := q.Drain(dst); n != 0 {
+				t.Errorf("reopened queue replayed %d consumed items, first %q", n, dst[0][:6])
+			}
+			if err = q.Close(); err != nil {
+				t.Fatal(err)
+			}
+			return true
 		}
 
-		// Read the head queue and the first item of file 1, which is loaded and removed
-		// while the write of file 2 is still in progress.
-		drain(17)
-
-		// Wait for the write of file 2 to fail. Its items return to the tail queue.
-		stats := q.Stats()
-		if !strings.Contains(logBuf.String(), "failed to write overflow file") {
-			t.Fatal("expected write of file 2 to fail")
+		for range maxAttempts {
+			if attempt() {
+				return
+			}
 		}
-		if len(stats.Files) != 0 || stats.TailQLen != 17 {
-			t.Fatalf("expected no files and 17 tail items, got files %v and %d tail items", stats.Files, stats.TailQLen)
-		}
-
-		// Read everything else, leaving the queue empty, and close it.
-		drain(itemCount)
-		if rdn != wrn {
-			t.Fatalf("read %d items, wrote %d", rdn, wrn)
-		}
-		if err = q.Close(); err != nil {
-			t.Fatal(err)
-		}
-
-		// After reopening, the queue must be empty and not replay any item.
-		q, err = cascadeq.New(dir, opts...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dst := make([][]byte, itemCount)
-		if n := q.Drain(dst); n != 0 {
-			t.Errorf("reopened queue replayed %d consumed items, first %q", n, dst[0][:6])
-		}
-		if err = q.Close(); err != nil {
-			t.Fatal(err)
-		}
+		t.Skipf("lost a race with the writer goroutine in all %d attempts", maxAttempts)
 	})
+}
+
+// syncBuffer is a strings.Builder that is safe for concurrent use, so that a
+// test can read log output while the queue may be writing to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (sb *syncBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.b.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.b.String()
 }
 
 func TestDisappearingOverflowDir(t *testing.T) {
@@ -2710,18 +2772,18 @@ func putN(t *testing.T, n, wrn int, q *cascadeq.Queue) int {
 
 func randItems(n, minLen, maxLen int) [][]byte {
 	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz"
-	randSrc := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randSrc := rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 	charsetLen := len(charset)
 
 	results := make([][]byte, 0, n)
 	randMax := maxLen + 1 - minLen
 
 	for range n {
-		length := randSrc.Intn(randMax) + minLen
+		length := randSrc.IntN(randMax) + minLen
 
 		b := make([]byte, length)
 		for i := range length {
-			b[i] = charset[randSrc.Intn(charsetLen)]
+			b[i] = charset[randSrc.IntN(charsetLen)]
 		}
 		results = append(results, b)
 	}
