@@ -276,6 +276,7 @@ func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer q.Close()
 
 		// Large incompressible items make each gzip overflow write slow.
 		r := rand.New(rand.NewSource(1))
@@ -971,103 +972,108 @@ func TestLoggedErrors(t *testing.T) {
 func TestClear(t *testing.T) {
 	t.Parallel()
 
-	const maxMemItems = 32
-	dir := t.TempDir()
+	// The test runs in a synctest bubble, so idle snapshots happen only while the
+	// test sleeps. Otherwise a scheduling delay could let an idle snapshot write
+	// the tail queue to cq-2.dat before the test creates a directory there.
+	synctest.Test(t, func(t *testing.T) {
+		const maxMemItems = 32
+		dir := t.TempDir()
 
-	q := makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(10*time.Millisecond))
+		q := makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithSnapshotInterval(10*time.Millisecond))
 
-	t.Log("writing 65 items to queue")
-	putN(t, 65, 0, q)
-	stats := q.Stats()
-	if len(stats.Files) == 0 {
-		t.Fatal("should have overflow files")
-	}
-	if stats.HeadQLen == 0 {
-		t.Fatal("should have items in head queue")
-	}
+		t.Log("writing 65 items to queue")
+		putN(t, 65, 0, q)
+		stats := q.Stats()
+		if len(stats.Files) == 0 {
+			t.Fatal("should have overflow files")
+		}
+		if stats.HeadQLen == 0 {
+			t.Fatal("should have items in head queue")
+		}
 
-	// Wait long enough for snapshot.
-	time.Sleep(20 * time.Millisecond)
+		// Wait long enough for snapshot.
+		time.Sleep(20 * time.Millisecond)
 
-	t.Log("clearing queue")
-	err := q.Clear()
-	if err != nil {
-		t.Fatal(err)
-	}
+		t.Log("clearing queue")
+		err := q.Clear()
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	select {
-	case <-q.Out():
-		t.Fatal("cleared queue should have no output")
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for empty signal after clearing queue")
-	case <-q.Empty():
-	}
+		select {
+		case <-q.Out():
+			t.Fatal("cleared queue should have no output")
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for empty signal after clearing queue")
+		case <-q.Empty():
+		}
 
-	entries, err := os.ReadDir(q.Dir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatal("should not have any overflow files, but found", len(entries))
-	}
+		entries, err := os.ReadDir(q.Dir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatal("should not have any overflow files, but found", len(entries))
+		}
 
-	stats = q.Stats()
-	if stats.HeadQLen != 0 || stats.TailQLen != 0 || len(stats.Files) != 0 || stats.HeadQBytes != 0 || stats.TailQBytes != 0 {
-		t.Fatal("queue is not empty")
-	}
+		stats = q.Stats()
+		if stats.HeadQLen != 0 || stats.TailQLen != 0 || len(stats.Files) != 0 || stats.HeadQBytes != 0 || stats.TailQBytes != 0 {
+			t.Fatal("queue is not empty")
+		}
 
-	putN(t, 33, 0, q)
-	stats = q.Stats()
-	if len(stats.Files) != 1 {
-		t.Fatal("should have 1 file, have", len(stats.Files))
-	}
-	dirName := filepath.Join(q.Dir(), "cq-1.dat")
-	err = os.Remove(dirName)
-	if err != nil {
-		panic(err)
-	}
+		putN(t, 33, 0, q)
+		stats = q.Stats()
+		if len(stats.Files) != 1 {
+			t.Fatal("should have 1 file, have", len(stats.Files))
+		}
+		dirName := filepath.Join(q.Dir(), "cq-1.dat")
+		err = os.Remove(dirName)
+		if err != nil {
+			panic(err)
+		}
 
-	// Create a directory with a file, so that trying to remove a snapshot by that
-	// name fails.
-	err = os.Mkdir(dirName, 0750)
-	if err != nil {
-		panic(err)
-	}
-	defer os.Remove(dirName)
-	subFileName := filepath.Join(dirName, "somefile")
-	file, err := os.Create(subFileName)
-	if err != nil {
-		panic("cannot create temp file")
-	}
-	file.Close()
-	defer os.Remove(file.Name())
+		// Create a directory with a file, so that trying to remove a snapshot by that
+		// name fails.
+		err = os.Mkdir(dirName, 0750)
+		if err != nil {
+			panic(err)
+		}
+		defer os.Remove(dirName)
+		subFileName := filepath.Join(dirName, "somefile")
+		file, err := os.Create(subFileName)
+		if err != nil {
+			panic("cannot create temp file")
+		}
+		file.Close()
+		defer os.Remove(file.Name())
 
-	dirName = filepath.Join(q.Dir(), "cq-2.dat")
-	err = os.Mkdir(dirName, 0750)
-	if err != nil {
-		panic(err)
-	}
-	defer os.Remove(dirName)
-	subFileName = filepath.Join(dirName, "somefile")
-	file, err = os.Create(subFileName)
-	if err != nil {
-		panic("cannot create temp file")
-	}
-	file.Close()
-	defer os.Remove(file.Name())
+		dirName = filepath.Join(q.Dir(), "cq-2.dat")
+		err = os.Mkdir(dirName, 0750)
+		if err != nil {
+			panic(err)
+		}
+		defer os.Remove(dirName)
+		subFileName = filepath.Join(dirName, "somefile")
+		file, err = os.Create(subFileName)
+		if err != nil {
+			panic("cannot create temp file")
+		}
+		file.Close()
+		defer os.Remove(file.Name())
 
-	err = q.Clear()
-	if err == nil {
-		t.Fatal("expect error")
-	}
-	expect := "cq-1.dat: directory not empty"
-	if !strings.Contains(err.Error(), expect) {
-		t.Fatal("did not get expected log message:", expect)
-	}
-	expect = "cq-2.dat: directory not empty"
-	if !strings.Contains(err.Error(), expect) {
-		t.Fatal("did not get expected log message:", expect)
-	}
+		err = q.Clear()
+		if err == nil {
+			t.Fatal("expect error")
+		}
+		expect := "cq-1.dat: directory not empty"
+		if !strings.Contains(err.Error(), expect) {
+			t.Fatal("did not get expected log message:", expect)
+		}
+		expect = "cq-2.dat: directory not empty"
+		if !strings.Contains(err.Error(), expect) {
+			t.Fatal("did not get expected log message:", expect)
+		}
+	})
 }
 
 func TestOrderAcrossSave(t *testing.T) {
