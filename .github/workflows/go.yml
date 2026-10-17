@@ -27,6 +27,9 @@ jobs:
     - name: Test
       run: go test -v ./... -coverprofile=coverage.txt -covermode=atomic
 
+    - name: Test with debug checks
+      run: go test -race -tags cascadeqdebug ./...
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v7
       with:

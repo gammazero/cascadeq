@@ -106,23 +106,25 @@ The configured memory/item limits are divided equally between headQ and tailQ. `
 New items go to headQ when both queues are empty and headQ has space. Otherwise they go to tailQ. When tailQ is full:
 
 - If no overflow files exist and headQ has room, shift items from tailQ into headQ.
-- Otherwise, flush tailQ to the next numbered `.dat` file and clear tailQ.
+- Otherwise, hand tailQ off to a background goroutine that writes it to the next numbered `.dat` file, and continue with an empty tailQ.
+
+Overflow writes are asynchronous, and only one runs at a time: a flush first waits for any write already in progress. While a write runs, its items are held in memory in addition to headQ and tailQ, so peak memory use can reach 1.5x the configured limits. If a write fails, the error is logged and its items are returned to the front of tailQ, so no data is lost. The next flush then retries the write synchronously, and if it fails again `Put`/`PutBatch` returns the error and the item is not enqueued.
 
 ### Read path
 
 Items are consumed from the front of headQ. When headQ empties:
 
-1. Load the next numbered file into headQ, then delete the file.
+1. Load the next numbered file into headQ, then delete the file. If that file is still being written, wait for the write to finish first.
 2. If no files exist, swap tailQ ↔ headQ (O(1)).
 3. If neither, signal `Empty()` and stop sending on the output channel.
 
 ### File format and naming
 
-Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `uint32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted. The gzip option can be toggled between runs without losing data: when loading, if a file is not found under the current setting, the opposite extension is tried.
+Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `uint32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted. The gzip option can be toggled between runs without losing data: when loading, if a file is not found under the current setting, the opposite extension is tried, and `Clear` removes files under both extensions.
 
 ### Single-goroutine event loop
 
-All state mutation happens inside one goroutine via a `select` over the input channel (Put and PutBatch), output channel (Out), drain, clear, and stats request channels, the empty signal channel, an optional snapshot ticker, and the close signal. A single `sync.RWMutex` only protects the `closed` flag, gating `Put`/`PutBatch`/`Drain`/`Clear`/`Stats` from racing with `Close`. No other synchronization is needed.
+All state mutation happens inside one goroutine via a `select` over the input channel (Put and PutBatch), output channel (Out), drain, clear, and stats request channels, the empty signal channel, the asynchronous write completion channel, an optional snapshot ticker, and the close signal. A single `sync.RWMutex` only protects the `closed` flag, gating `Put`/`PutBatch`/`Drain`/`Clear`/`Stats` from racing with `Close`. No other synchronization is needed.
 
 ### Snapshot feature
 
