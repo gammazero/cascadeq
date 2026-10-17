@@ -478,7 +478,16 @@ func (q *Queue) run() {
 			panic(fmt.Sprintf("cascadeq: file being written (%d) is not the last queue file, files: %v", writeNum, q.getFileNames()))
 		}
 		if err != nil {
-			q.logger.Error("failed to write overflow file", slog.String("path", q.makeFilePath(writeNum)), slog.Any("err", err))
+			writePath := q.makeFilePath(writeNum)
+			q.logger.Error("failed to write overflow file", slog.String("path", writePath), slog.Any("err", err))
+			// The failed write did not replace any file already at its path. That can only
+			// be a tail snapshot written while this was the next file number, and it is
+			// stale because the items are back in memory. Remove it, since file numbering
+			// may reset before it is overwritten, which would leave it to be replayed after
+			// the queue is reopened.
+			if err := os.Remove(writePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				q.logger.Error("failed to remove stale snapshot", slog.String("path", writePath), slog.Any("err", err))
+			}
 			// No other file is added while a write is in progress, so the failed file
 			// is the last one. Its items are older than everything in tailQ, so return
 			// them to the front of tailQ to keep them in order.
