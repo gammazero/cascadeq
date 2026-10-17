@@ -15,6 +15,12 @@
 // by loading the next numbered file into headQ; when no files remain, tailQ
 // and headQ are swapped in O(1).
 //
+// Overflow files are written asynchronously, one at a time, so Put does not
+// wait for disk I/O unless a previous write is still in progress. Reading a
+// file that is still being written waits for the write to finish. While a
+// write is in progress its items are held in memory, so peak memory use can
+// reach 1.5 times the configured limits.
+//
 // # Usage
 //
 // Create a Queue with New, write items with Put or PutBatch, and consume them

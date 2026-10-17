@@ -302,6 +302,12 @@ func (q *Queue) Out() <-chan []byte {
 
 // Put writes a []byte to the queue. A nil item is ignored and returns nil
 // without being enqueued.
+//
+// When memory is full, Put starts an asynchronous write of the tail queue to
+// disk, and only waits if a previous write is still in progress. If an
+// asynchronous write fails, its items are kept in memory and the next write is
+// retried synchronously; if that also fails, Put returns the error and the
+// item is not enqueued.
 func (q *Queue) Put(item []byte) error {
 	if item == nil {
 		return nil
@@ -329,7 +335,9 @@ func (q *Queue) Put(item []byte) error {
 // PutBatch enqueues all items in a single event-loop visit. If items is nil or
 // empty, it returns nil immediately. Nil items are skipped. Returns the first
 // error encountered, whether from size validation or from writing overflow to
-// disk; items before the failing one are already enqueued.
+// disk; items before the failing one are already enqueued. As with Put, an
+// overflow write error is returned only when a failed asynchronous write is
+// retried and fails again.
 func (q *Queue) PutBatch(items [][]byte) error {
 	if len(items) == 0 {
 		return nil
@@ -374,7 +382,9 @@ func (q *Queue) Drain(dst [][]byte) int {
 	return n
 }
 
-// Stats retrieves information about queue internal data.
+// Stats retrieves information about queue internal data. It waits for any
+// in-progress overflow write to finish, so that Files lists only files that
+// exist on disk.
 func (q *Queue) Stats() Stats {
 	q.closeMutex.RLock()
 	defer q.closeMutex.RUnlock()
@@ -415,8 +425,21 @@ func (q *Queue) run() {
 	headQ.SetBaseCap(maxItems)
 	tailQ.SetBaseCap(maxItems)
 
+	// Overflow files are written asynchronously, one at a time. While a write is
+	// in progress, writeQ is owned by the writer goroutine and must not be
+	// touched by the event loop until the result is received from writeDone.
+	var (
+		writeQ      deque.Deque[[]byte]
+		writeQBytes int
+		writeNum    int64        // file number being written; valid while writeDone != nil
+		writeDone   <-chan error // non-nil while an async write is in progress
+		writeErr    error        // last write error; forces the next flush to be synchronous
+	)
+	writeRsp := make(chan error, 1)
+	writeQ.SetBaseCap(maxItems)
+
 	if q.files.Len() != 0 {
-		bytesLoaded := q.loadQueueFromFile(&headQ)
+		bytesLoaded := q.loadQueueFromFile(&headQ, nil)
 		if headQ.Len() != 0 {
 			next = headQ.Front()
 			output = q.output
@@ -431,6 +454,82 @@ func (q *Queue) run() {
 		snapTicker := time.NewTicker(q.snapInterval)
 		defer snapTicker.Stop()
 		snapCheck = snapTicker.C
+	}
+
+	// startWrite hands the contents of tailQ to a goroutine that writes them to
+	// the next overflow file. The file number is added to q.files immediately so
+	// that numbering stays sequential; reading that file waits for the write.
+	startWrite := func() {
+		fileNum := q.nextFileNum()
+		writePath := q.makeFilePath(fileNum)
+		writeQ, tailQ = tailQ, writeQ
+		writeQBytes, tailQBytes = tailQBytes, 0
+		q.files.PushBack(fileNum)
+		writeNum = fileNum
+		writeDone = writeRsp
+		go func() {
+			writeRsp <- q.saveToFile(writePath, &writeQ, false)
+		}()
+	}
+
+	writeComplete := func(err error) {
+		writeDone = nil
+		if debug && (q.files.Len() == 0 || q.files.Back() != writeNum) {
+			panic(fmt.Sprintf("cascadeq: file being written (%d) is not the last queue file, files: %v", writeNum, q.getFileNames()))
+		}
+		if err != nil {
+			q.logger.Error("failed to write overflow file", slog.String("path", q.makeFilePath(writeNum)), slog.Any("err", err))
+			// No other file is added while a write is in progress, so the failed file
+			// is the last one. Its items are older than everything in tailQ, so return
+			// them to the front of tailQ to keep them in order.
+			if q.files.Len() != 0 && q.files.Back() == writeNum {
+				q.files.PopBack()
+			}
+			for item := range writeQ.IterPopBack() {
+				tailQ.PushFront(item)
+			}
+			tailQBytes += writeQBytes
+			writeQBytes = 0
+			writeErr = err
+			return
+		}
+		writeQ.Clear()
+		writeQBytes = 0
+		writeErr = nil
+	}
+
+	// finishWrite waits for any in-progress write to complete.
+	finishWrite := func() {
+		if writeDone != nil {
+			writeComplete(<-writeDone)
+		}
+	}
+
+	// awaitFile is called before reading fileNum, and waits for the file to be
+	// written if it is being written.
+	awaitFile := func(fileNum int64) {
+		if writeDone != nil && fileNum == writeNum {
+			finishWrite()
+		}
+	}
+
+	// flushTail writes tailQ to the next overflow file. Only one write is allowed
+	// at a time, so this first waits for any write already in progress.
+	flushTail := func() error {
+		finishWrite()
+		if writeErr != nil {
+			// The previous write failed and its items were returned to tailQ. Retry
+			// synchronously so that a persistent write failure is reported to the caller
+			// instead of growing memory without bound.
+			startWrite()
+			finishWrite()
+			if writeErr != nil {
+				return fmt.Errorf("failed saving queue to file: %w", writeErr)
+			}
+			return nil
+		}
+		startWrite()
+		return nil
 	}
 
 	putItem := func(item []byte) error {
@@ -466,11 +565,8 @@ func (q *Queue) run() {
 			}
 			headQBytes += deltaBytes
 			tailQBytes -= deltaBytes
-		} else {
-			if err := q.saveTailToNextFile(&tailQ); err != nil {
-				return fmt.Errorf("failed saving queue to file: %w", err)
-			}
-			tailQBytes = 0
+		} else if err := flushTail(); err != nil {
+			return err
 		}
 		tailQ.PushBack(item)
 		tailQBytes += len(item)
@@ -486,7 +582,7 @@ func (q *Queue) run() {
 				// reset to 1, so any stale tail snapshot at that slot must be removed now,
 				// otherwise it will be replayed incorrectly on restart.
 				tailSnapNum := q.nextFileNum()
-				bytesLoaded = q.loadQueueFromFile(&headQ)
+				bytesLoaded = q.loadQueueFromFile(&headQ, awaitFile)
 				if q.files.Len() == 0 {
 					err := os.Remove(q.makeFilePath(tailSnapNum))
 					if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -494,7 +590,7 @@ func (q *Queue) run() {
 					}
 				}
 			} else {
-				bytesLoaded = q.loadQueueFromFile(&headQ)
+				bytesLoaded = q.loadQueueFromFile(&headQ, awaitFile)
 			}
 			if headQ.Len() != 0 {
 				headQBytes = bytesLoaded
@@ -517,6 +613,7 @@ func (q *Queue) run() {
 		select {
 		case req, open := <-q.input:
 			if !open {
+				finishWrite()
 				return
 			}
 			snapCount++
@@ -578,7 +675,14 @@ func (q *Queue) run() {
 			snapCount += n
 			req.rsp <- n
 
+		case err := <-writeDone:
+			writeComplete(err)
+
 		case errChan := <-q.clearReqChan:
+			// Wait for any in-progress write so its file is not created after the
+			// files are removed.
+			finishWrite()
+			writeErr = nil
 			snapCount = 0
 			headQ.Clear()
 			headQBytes = 0
@@ -609,6 +713,9 @@ func (q *Queue) run() {
 			errChan <- errors.Join(errs...)
 
 		case rspChan := <-q.statsReqChan:
+			// Wait for any in-progress write so that Files lists only files that
+			// exist on disk.
+			finishWrite()
 			rspChan <- Stats{
 				MaxQBytes:  maxBytes,
 				MaxQLen:    maxItems,
@@ -625,6 +732,9 @@ func (q *Queue) run() {
 			// snapCount == prevSnapCount means no Put or read since last tick (idle). Skip
 			// snapshot under load: overflow I/O already handles persistence.
 			if snapCount > 0 && snapCount == prevSnapCount {
+				// Snapshot files are numbered after the overflow files, so any
+				// in-progress write must complete first.
+				finishWrite()
 				tq := &tailQ
 				// If overflow files exist and tailQ is full, flush tailQ as a regular overflow
 				// file instead of a tail snapshot: the tail cannot move directly to head
@@ -756,11 +866,20 @@ retry:
 
 // loadQueueFromFile loads the next readable file into headQ. On error the file
 // is renamed to .bad rather than deleted. A partial read returns whatever
-// items were loaded successfully.
-func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte]) int {
+// items were loaded successfully. If awaitFile is not nil, it is called with
+// each file number before that file is read.
+func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte], awaitFile func(int64)) int {
 	var bytesLoaded int
 
 	for q.files.Len() != 0 && headQ.Len() == 0 {
+		if awaitFile != nil {
+			// Wait for the file if it is still being written. If that write fails,
+			// the file is removed from q.files.
+			awaitFile(q.files.Front())
+			if q.files.Len() == 0 {
+				break
+			}
+		}
 		readPath := q.makeFilePath(q.files.PopFront())
 
 		var err error
