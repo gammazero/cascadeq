@@ -709,10 +709,14 @@ func (q *Queue) run() {
 				}
 			}
 			for fileNum := range q.files.IterPopFront() {
+				// The gzip setting may have changed since the file was written, so remove the
+				// file under both extensions.
 				writePath := q.makeFilePath(fileNum)
-				err := os.Remove(writePath)
-				if err != nil && !errors.Is(err, fs.ErrNotExist) {
-					errs = append(errs, err)
+				for _, path := range []string{writePath, toggleGzipExt(writePath)} {
+					err := os.Remove(path)
+					if err != nil && !errors.Is(err, fs.ErrNotExist) {
+						errs = append(errs, err)
+					}
 				}
 			}
 			errChan <- errors.Join(errs...)
@@ -835,6 +839,15 @@ func (q *Queue) makeFilePath(fileNum int64) string {
 	return filepath.Join(q.dir, q.makeFileName(fileNum))
 }
 
+// toggleGzipExt returns filePath with the gzip extension removed if it has one,
+// or added if it does not.
+func toggleGzipExt(filePath string) string {
+	if p, ok := strings.CutSuffix(filePath, gzipExt); ok {
+		return p
+	}
+	return filePath + gzipExt
+}
+
 func (q *Queue) handleReadError(readPath string) {
 	badName := readPath + BadFileExt
 	var (
@@ -884,11 +897,7 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte], awaitFile func(int
 			if errors.Is(err, fs.ErrNotExist) {
 				// The gzip setting may have changed since the file was written; try the
 				// opposite extension before giving up.
-				var wasGzip bool
-				readPath, wasGzip = strings.CutSuffix(readPath, gzipExt)
-				if !wasGzip {
-					readPath += gzipExt
-				}
+				readPath = toggleGzipExt(readPath)
 				bytesLoaded, err = readQueueFile(readPath, q.minItemSize, q.maxItemSize, headQ)
 				if errors.Is(err, fs.ErrNotExist) {
 					continue // read next file
