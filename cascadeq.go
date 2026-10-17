@@ -70,9 +70,10 @@ type Queue struct {
 	dir  string
 	name string
 
-	closeErr   error
-	closeMutex sync.RWMutex
-	logger     *slog.Logger
+	closeErr        error
+	closeMutex      sync.RWMutex
+	logger          *slog.Logger
+	beforeFileClose func(string)
 
 	done         chan struct{}
 	empty        chan struct{}
@@ -1073,6 +1074,9 @@ func (q *Queue) saveToFile(writePath string, memQ *deque.Deque[[]byte], sync boo
 	err = writer.Flush()
 	if err != nil {
 		return err
+	}
+	if q.beforeFileClose != nil {
+		q.beforeFileClose(writePath)
 	}
 	if sync {
 		return writeFile.CloseSync()
