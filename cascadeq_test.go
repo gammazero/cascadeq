@@ -899,6 +899,50 @@ func TestGzipOnOffAcrossSave(t *testing.T) {
 	}
 }
 
+func TestClearAfterGzipToggle(t *testing.T) {
+	t.Parallel()
+
+	const maxMemItems = 32
+	dir := t.TempDir()
+
+	// Leave non-gzip overflow and snapshot files on disk.
+	q := makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems))
+	putN(t, 64, 1000, q)
+	err := q.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear with gzip on must remove the non-gzip files too.
+	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithGzip(true))
+	if err = q.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, len(entries))
+		for i, ent := range entries {
+			names[i] = ent.Name()
+		}
+		t.Fatal("files left after clear:", names)
+	}
+
+	// Overflow files written after the clear reuse the old file numbers. Only the
+	// new items may be read after reopening.
+	wrn := putN(t, 33, 0, q)
+	if err = q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q = makeQueue(t, dir, cascadeq.WithMaxMemItems(maxMemItems), cascadeq.WithGzip(true))
+	rdn := getAll(t, 0, q)
+	if rdn != wrn {
+		t.Fatalf("number of items written (%d) and read (%d) do not match", wrn, rdn)
+	}
+}
+
 func logStats(t *testing.T, stats cascadeq.Stats) {
 	t.Helper()
 	t.Logf("Stats:\nHeadQBytes: %d\nHeadQLen: %d\nTailQBytes: %d\nTailQLen: %d\nFiles: %d", stats.HeadQBytes, stats.HeadQLen, stats.TailQBytes, stats.TailQLen, len(stats.Files))

@@ -118,7 +118,7 @@ Items are consumed from the front of headQ. When headQ empties:
 
 ### File format and naming
 
-Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `uint32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted. The gzip option can be toggled between runs without losing data: when loading, if a file is not found under the current setting, the opposite extension is tried.
+Files are stored in the directory passed to `New` and named `cq-{hexnum}.dat` (or `.dat.gz` when compression is enabled). Each file is a sequence of big-endian `uint32` length-prefixed byte records. File number `0` is reserved for the headQ snapshot written on `Close` or on an idle snapshot tick; higher numbers are tailQ overflow files written in sequence. Corrupt files are renamed with a `.bad` extension rather than deleted. The gzip option can be toggled between runs without losing data: when loading, if a file is not found under the current setting, the opposite extension is tried, and `Clear` removes files under both extensions.
 
 ### Single-goroutine event loop
 
