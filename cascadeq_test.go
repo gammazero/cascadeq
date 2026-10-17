@@ -207,7 +207,7 @@ func TestReadWaitsForFailedWrite(t *testing.T) {
 	// Large incompressible items make the gzip write slow, so the write is still in
 	// progress when the Drain below needs the file.
 	var seed [32]byte
-	copy(seed[:], "TestReadWaitsForFailedWrit-seed")
+	copy(seed[:], "TestReadWaitsForFailedWrite-seed")
 	cc8 := rand.NewChaCha8(seed)
 	items := make([][]byte, itemCount)
 	for i := range items {
@@ -276,7 +276,7 @@ func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 
 		// Large incompressible items make each gzip overflow write slow.
 		var seed [32]byte
-		copy(seed[:], "TestFailedWriteRemovesStaleSnapshot")
+		copy(seed[:], "TestFailedWriteRemovesStaleSnaps")
 		cc8 := rand.NewChaCha8(seed)
 		items := make([][]byte, itemCount)
 		for i := range items {
