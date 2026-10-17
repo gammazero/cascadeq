@@ -276,6 +276,11 @@ func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer func() {
+			if q != nil {
+				_ = q.Close()
+			}
+		}()
 
 		// Large incompressible items make each gzip overflow write slow.
 		r := rand.New(rand.NewSource(1))
