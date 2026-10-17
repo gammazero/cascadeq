@@ -177,6 +177,75 @@ func TestAsyncWriteFailureRecovery(t *testing.T) {
 	}
 }
 
+// TestReadWaitsForFailedWrite reads while the write of the only overflow file
+// is in progress, and that write fails. The read must wait for the write, then
+// find no file to load and take the items returned to the tail queue instead.
+func TestReadWaitsForFailedWrite(t *testing.T) {
+	t.Parallel()
+
+	const (
+		itemCount = 33
+		itemSize  = 512 * 1024
+	)
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	q := makeQueue(t, t.TempDir(), cascadeq.WithGzip(true), cascadeq.WithLogger(logger),
+		cascadeq.WithMaxMemItems(32), cascadeq.WithMaxItemSize(itemSize),
+		cascadeq.WithMaxMemory(64*1024*1024))
+
+	// A non-empty directory with the name of the first overflow file makes the
+	// final rename of that write fail, after all the data has been written.
+	blockDir := filepath.Join(q.Dir(), "cq-1.dat.gz")
+	if err := os.Mkdir(blockDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blockDir, "somefile"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Large incompressible items make the gzip write slow, so the write is still in
+	// progress when the Drain below needs the file.
+	r := rand.New(rand.NewSource(1))
+	items := make([][]byte, itemCount)
+	for i := range items {
+		item := make([]byte, itemSize)
+		r.Read(item)
+		copy(item, fmt.Sprintf("%06d", i))
+		items[i] = item
+	}
+
+	// Items 0-15 fill the head queue and 16-31 fill the tail queue. Item 32 starts
+	// the asynchronous write of items 16-31 to file 1.
+	for _, item := range items {
+		if err := q.Put(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dst := make([][]byte, itemCount+1)
+	n := q.Drain(dst)
+	if n != itemCount {
+		t.Fatalf("drained %d items, expected %d", n, itemCount)
+	}
+	for i, item := range dst[:n] {
+		if !bytes.Equal(item, items[i]) {
+			t.Fatalf("item %d does not match, got prefix %q", i, item[:6])
+		}
+	}
+	if !strings.Contains(logBuf.String(), "failed to write overflow file") {
+		t.Fatal("expected overflow write to fail")
+	}
+	stats := q.Stats()
+	if stats.HeadQLen != 0 || stats.TailQLen != 0 || len(stats.Files) != 0 {
+		t.Fatalf("queue should be empty, got stats: %+v", stats)
+	}
+
+	// Remove the blocking directory so that the close snapshot succeeds.
+	if err := os.RemoveAll(blockDir); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDisappearingOverflowDir(t *testing.T) {
 	t.Parallel()
 
