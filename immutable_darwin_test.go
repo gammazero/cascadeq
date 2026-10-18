@@ -16,18 +16,18 @@ import (
 )
 
 // ufImmutable is the UF_IMMUTABLE file flag from sys/stat.h. A file with this
-// flag cannot be removed or replaced by a rename, while other files in the same
-// directory are unaffected. The file owner can set and clear it.
+// flag cannot be removed or replaced by a rename, while other files in the
+// same directory are unaffected. The file owner can set and clear it.
 const ufImmutable = 0x2
 
 // TestStaleSnapshotRemovedAtClose checks that a stale tail snapshot is not
 // replayed after the queue is reopened when its removal fails while the queue
 // is running, and that Close removes it. The removal fails for real: the
-// snapshot is made immutable while the last overflow file is consumed, which is
-// when the queue removes the snapshot because file numbering resets.
+// snapshot is made immutable while the last overflow file is consumed, which
+// is when the queue removes the snapshot because file numbering resets.
 //
-// The test runs in a synctest bubble, so the idle snapshot happens without real
-// waiting, and no snapshot can happen while the test is not blocked.
+// The test runs in a synctest bubble, so the idle snapshot happens without
+// real waiting, and no snapshot can happen while the test is not blocked.
 func TestStaleSnapshotRemovedAtClose(t *testing.T) {
 	t.Parallel()
 	testStaleSnapshotRemoved(t, false)

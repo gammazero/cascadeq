@@ -29,7 +29,7 @@ golangci-lint run
 
 ## Code style
 
-Limit comment lines in Go files to 80 characters, counted from the initial `//`, excluding any leading indentation or tabs used to align the comment with code. For a comment that follows code on the same line, count from its `//` to the end of the line. Fill each comment line as close to the limit as possible: a word moves to the next line only if it would push the current line past 80 characters. A line that ends a sentence may keep its line break when the next sentence starts a separate point. This applies to prose comments; leave lists, code examples, and directives such as `//go:build` or `//nolint` as they are.
+Limit comment lines in Go files to 79 characters, counted from the initial `//`, excluding any leading indentation or tabs used to align the comment with code. For a comment that follows code on the same line, count from its `//` to the end of the line. Fill each comment line as close to the limit as possible: a word moves to the next line only if it would push the current line past 79 characters. A line that ends a sentence may keep its line break when the next sentence starts a separate point. This applies to prose comments; leave lists, code examples, and directives such as `//go:build` or `//nolint` as they are.
 
 ## Design
 
