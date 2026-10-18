@@ -802,6 +802,15 @@ func (q *Queue) readQueueDir() error {
 	for _, ent := range entries {
 		fileNum, ok := parseFileNum(ent.Name())
 		if !ok {
+			if isTempFileName(ent.Name()) && !ent.IsDir() {
+				// A queue file write was interrupted, such as by the process being killed,
+				// before its temp file was renamed. Only this Queue uses the directory, so no
+				// write can be in progress.
+				err = os.Remove(filepath.Join(q.dir, ent.Name()))
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					q.logger.Error("failed to remove temp file", slog.String("name", ent.Name()), slog.Any("err", err))
+				}
+			}
 			continue
 		}
 		if ent.IsDir() {
@@ -839,6 +848,22 @@ func (q *Queue) removeUnusedFiles(inUse func(fileNum int64) bool) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// isTempFileName reports whether name is the name of a temp file written by
+// saveToFile. atomicfile writes each queue file to a temp file named after the
+// queue file, followed by "-" and a random decimal number, and then renames it.
+func isTempFileName(name string) bool {
+	i := strings.LastIndexByte(name, '-')
+	if i < 0 {
+		return false
+	}
+	random := name[i+1:]
+	if random == "" || strings.Trim(random, "0123456789") != "" {
+		return false
+	}
+	_, ok := parseFileNum(name[:i])
+	return ok
 }
 
 // parseFileNum returns the number of the queue file with the given name, which
