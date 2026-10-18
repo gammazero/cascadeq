@@ -404,7 +404,22 @@ func (q *Queue) run() {
 	var headQ, tailQ deque.Deque[[]byte]
 
 	defer func() {
-		q.closeErr = q.snapshotMemQueue(&headQ, &tailQ, true)
+		err := q.snapshotMemQueue(&headQ, &tailQ, true)
+		// A stale file whose removal failed while the queue was running is not removed
+		// later if file numbering has reset, and would be replayed when the queue is
+		// reopened. Remove every queue file that is not in use: the snapshots and the
+		// files in q.files.
+		inUse := make(map[int64]struct{}, q.files.Len()+2)
+		inUse[0] = struct{}{}
+		inUse[q.nextFileNum()] = struct{}{}
+		for fileNum := range q.files.Iter() {
+			inUse[fileNum] = struct{}{}
+		}
+		staleErr := q.removeUnusedFiles(func(fileNum int64) bool {
+			_, ok := inUse[fileNum]
+			return ok
+		})
+		q.closeErr = errors.Join(err, staleErr)
 		q.files.Clear()
 		close(q.output)
 		close(q.done)
@@ -701,25 +716,10 @@ func (q *Queue) run() {
 			next = nil
 			empty = q.empty
 
-			var errs []error
-			if snapCheck != nil {
-				err := q.snapshotMemQueue(&headQ, &tailQ, false)
-				if err != nil {
-					errs = append(errs, err)
-				}
-			}
-			for fileNum := range q.files.IterPopFront() {
-				// The gzip setting may have changed since the file was written, so remove the
-				// file under both extensions.
-				writePath := q.makeFilePath(fileNum)
-				for _, path := range []string{writePath, toggleGzipExt(writePath)} {
-					err := os.Remove(path)
-					if err != nil && !errors.Is(err, fs.ErrNotExist) {
-						errs = append(errs, err)
-					}
-				}
-			}
-			errChan <- errors.Join(errs...)
+			// Remove every queue file in the directory, not only those in q.files, to
+			// include snapshots and any file whose earlier removal failed.
+			q.files.Clear()
+			errChan <- q.removeUnusedFiles(func(int64) bool { return false })
 
 		case rspChan := <-q.statsReqChan:
 			// Wait for any in-progress write so that Files lists only files that
@@ -800,17 +800,8 @@ func (q *Queue) readQueueDir() error {
 
 	files := make([]int64, 0, len(entries))
 	for _, ent := range entries {
-		name := strings.TrimSuffix(ent.Name(), gzipExt)
-		name, found := strings.CutSuffix(name, fileExt)
-		if !found {
-			continue
-		}
-		name, found = strings.CutPrefix(name, filePrefix)
-		if !found {
-			continue
-		}
-		fileNum, err := strconv.ParseInt(name, 16, 64)
-		if err != nil {
+		fileNum, ok := parseFileNum(ent.Name())
+		if !ok {
 			continue
 		}
 		if ent.IsDir() {
@@ -822,6 +813,52 @@ func (q *Queue) readQueueDir() error {
 	q.files.CopyInSlice(files)
 
 	return nil
+}
+
+// removeUnusedFiles removes each queue file in the queue directory whose number
+// is not in use, as reported by inUse. Files are matched by number under either
+// extension, since the gzip setting may have changed since a file was written.
+func (q *Queue) removeUnusedFiles(inUse func(fileNum int64) bool) error {
+	entries, err := os.ReadDir(q.dir)
+	if err != nil {
+		// io.EOF is returned by some implementations for an empty directory.
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var errs []error
+	for _, ent := range entries {
+		fileNum, ok := parseFileNum(ent.Name())
+		if !ok || inUse(fileNum) {
+			continue
+		}
+		err = os.Remove(filepath.Join(q.dir, ent.Name()))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// parseFileNum returns the number of the queue file with the given name, which
+// may have the gzip extension. It returns false if name is not the name of a
+// queue file.
+func parseFileNum(name string) (int64, bool) {
+	name = strings.TrimSuffix(name, gzipExt)
+	name, found := strings.CutSuffix(name, fileExt)
+	if !found {
+		return 0, false
+	}
+	name, found = strings.CutPrefix(name, filePrefix)
+	if !found {
+		return 0, false
+	}
+	fileNum, err := strconv.ParseInt(name, 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	return fileNum, true
 }
 
 func (q *Queue) makeFileName(fileNum int64) string {
