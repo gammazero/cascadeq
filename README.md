@@ -90,6 +90,16 @@ for _, item := range dst[:n] {
 | `WithSnapshotInterval(d)` | disabled | Write in-memory state to disk after this much idle time |
 | `WithLogger(l)` | JSON→stderr | Replace the default slog.Logger |
 
+## Durability
+
+cascadeq uses the disk to buffer items that do not fit in memory, not to make them durable. `Put` returns once an item is in memory, overflow files are not synced to storage, and an item is gone from the queue as soon as it is received from `Out` or `Drain`; there is no acknowledgement or redelivery. If items must survive a crash, use a durable message log instead.
+
+- **Clean `Close`**: nothing is lost and nothing is duplicated. Calling `Close` before the process exits preserves every item still in the queue: the items in memory are written to disk, joining the overflow files already there, and the reopened queue returns all of them in their original order. The files that `Close` writes are synced to storage, along with the directory that holds them. Overflow files written earlier are not synced again; the operating system writes them out even after the process exits, so only a power loss or OS crash soon after `Close` could affect them.
+- **Process crash** (killed, panic, out of memory): items in memory are lost, including unread items from an overflow file that was already loaded, since a file is deleted when it is loaded. Overflow files already written survive, because the operating system still writes them out. With `WithSnapshotInterval`, the last idle snapshot recovers what was in memory then, but any of those items read after the snapshot are delivered again.
+- **Power loss or OS crash**: as for a process crash, and in addition, files written in the last several seconds may be missing, or empty or truncated. Damaged files are renamed with a `.bad` extension and their items are lost.
+
+After a crash, items can be delivered more than once: a stale snapshot replays items read after it was written, and because deleting a file is not synced, after a power loss a file whose items were already read can come back and be read again. If duplicates matter, give items IDs and deduplicate in the consumer.
+
 ## Design
 
 ### Dual-queue memory model
