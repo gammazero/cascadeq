@@ -2,6 +2,7 @@ package cascadeq_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -1303,6 +1304,97 @@ func TestGzipOnOffAcrossSave(t *testing.T) {
 	rdn = getAll(t, rdn, q)
 	if rdn != wrn {
 		t.Fatalf("number of items written (%d) and read (%d) do not match", wrn, rdn)
+	}
+}
+
+// TestCorruptGzipFiles reads valid gzip queue files between ones that fail to
+// read, one with an invalid gzip header and one truncated after its header. The
+// pooled gzip and buffered readers used for a file that fails must read the
+// following files correctly.
+func TestCorruptGzipFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	gzipFile := func(first, last int) []byte {
+		var buf bytes.Buffer
+		gzw := gzip.NewWriter(&buf)
+		var szbuf [4]byte
+		for i := first; i <= last; i++ {
+			item := fmt.Appendf(nil, "%06d", i)
+			binary.BigEndian.PutUint32(szbuf[:], uint32(len(item)))
+			gzw.Write(szbuf[:])
+			gzw.Write(item)
+		}
+		if err := gzw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	files := []struct {
+		name string
+		data []byte
+	}{
+		{"cq-1.dat.gz", gzipFile(0, 9)},
+		{"cq-2.dat.gz", []byte("this is not gzip data")},
+		{"cq-3.dat.gz", gzipFile(10, 19)},
+		{"cq-4.dat.gz", gzipFile(100, 109)[:10]}, // gzip header only
+		{"cq-5.dat.gz", gzipFile(20, 29)},
+	}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	q := makeQueue(t, dir, cascadeq.WithGzip(true), cascadeq.WithLogger(logger))
+	if rdn := getAll(t, 0, q); rdn != 30 {
+		t.Fatalf("read %d items, expected 30", rdn)
+	}
+	for _, name := range []string{"cq-2.dat.gz.bad", "cq-4.dat.gz.bad"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("expected bad file: %v", err)
+		}
+	}
+}
+
+// TestReusedFileBuffers writes and reads many overflow files, with and without
+// gzip, so that the pooled buffers and gzip state used for queue files are
+// reused many times. Items vary in size so that they cross buffer boundaries.
+func TestReusedFileBuffers(t *testing.T) {
+	t.Parallel()
+
+	const itemCount = 500
+	for i := range 2 {
+		gz := i%2 == 1
+		t.Run(fmt.Sprintf("queue%d-gzip=%t", i, gz), func(t *testing.T) {
+			t.Parallel()
+
+			r := rand.New(rand.NewPCG(uint64(i), 0))
+			items := make([][]byte, itemCount)
+			for n := range items {
+				item := make([]byte, 1+r.IntN(10000))
+				for j := range item {
+					item[j] = byte(r.IntN(16)) // compressible
+				}
+				copy(item, fmt.Sprintf("%d:%06d", i, n))
+				items[n] = item
+			}
+
+			q := makeQueue(t, t.TempDir(), cascadeq.WithGzip(gz), cascadeq.WithMaxMemItems(32))
+			for _, item := range items {
+				if err := q.Put(item); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for n, want := range items {
+				got := <-q.Out()
+				if !bytes.Equal(got, want) {
+					t.Fatalf("item %d does not match", n)
+				}
+			}
+		})
 	}
 }
 
