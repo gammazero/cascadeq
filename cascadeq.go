@@ -38,6 +38,10 @@ const (
 	pkgName    = "cascadeq"
 )
 
+// ioBufferSize is the size of the buffers used to read and write queue files.
+// Larger buffers mean fewer read and write system calls for each file.
+const ioBufferSize = 64 * 1024
+
 // ErrClosed is returned when I/O is attempted on a closed Queue.
 var ErrClosed = errors.New("closed")
 
@@ -84,6 +88,14 @@ type Queue struct {
 
 	rspErrPool sync.Pool
 	rspNPool   sync.Pool
+
+	// The buffers and gzip state used to read and write queue files are pooled,
+	// because each file needs them and a gzip.Writer alone allocates about 1 MB.
+	// Pooled objects that are not in use are freed by the garbage collector.
+	bufReaderPool  sync.Pool
+	bufWriterPool  sync.Pool
+	gzipReaderPool sync.Pool
+	gzipWriterPool sync.Pool
 
 	files  deque.Deque[int64]
 	closed bool
@@ -211,6 +223,18 @@ func New(dir string, options ...func(*Queue)) (*Queue, error) {
 		},
 		rspNPool: sync.Pool{
 			New: func() any { return make(chan int, 1) },
+		},
+		bufReaderPool: sync.Pool{
+			New: func() any { return bufio.NewReaderSize(nil, ioBufferSize) },
+		},
+		bufWriterPool: sync.Pool{
+			New: func() any { return bufio.NewWriterSize(nil, ioBufferSize) },
+		},
+		gzipReaderPool: sync.Pool{
+			New: func() any { return new(gzip.Reader) },
+		},
+		gzipWriterPool: sync.Pool{
+			New: func() any { return gzip.NewWriter(nil) },
 		},
 	}
 	for _, opt := range options {
@@ -954,13 +978,13 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte], awaitFile func(int
 		readPath := q.makeFilePath(q.files.PopFront())
 
 		var err error
-		bytesLoaded, err = readQueueFile(readPath, q.minItemSize, q.maxItemSize, headQ)
+		bytesLoaded, err = q.readQueueFile(readPath, headQ)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				// The gzip setting may have changed since the file was written; try the
 				// opposite extension before giving up.
 				readPath = toggleGzipExt(readPath)
-				bytesLoaded, err = readQueueFile(readPath, q.minItemSize, q.maxItemSize, headQ)
+				bytesLoaded, err = q.readQueueFile(readPath, headQ)
 				if errors.Is(err, fs.ErrNotExist) {
 					continue // read next file
 				}
@@ -985,7 +1009,7 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte], awaitFile func(int
 	return bytesLoaded
 }
 
-func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.Deque[[]byte]) (int, error) {
+func (q *Queue) readQueueFile(readPath string, headQ *deque.Deque[[]byte]) (int, error) {
 	readFile, err := os.Open(readPath) //nolint:gosec
 	if err != nil {
 		return 0, err
@@ -1009,15 +1033,20 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 		szbuf       [4]byte
 		r           io.Reader
 	)
-	reader := bufio.NewReader(readFile)
+	reader := q.bufReaderPool.Get().(*bufio.Reader)
+	reader.Reset(readFile)
+	defer func() {
+		reader.Reset(nil)
+		q.bufReaderPool.Put(reader)
+	}()
 	r = reader
 
 	if strings.HasSuffix(readPath, gzipExt) {
-		gzr, err := gzip.NewReader(reader)
-		if err != nil {
+		gzr := q.gzipReaderPool.Get().(*gzip.Reader)
+		defer q.gzipReaderPool.Put(gzr)
+		if err = gzr.Reset(reader); err != nil {
 			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
-		defer gzr.Close() //nolint:errcheck
 		r = gzr
 	}
 
@@ -1033,7 +1062,7 @@ func readQueueFile(readPath string, minItemSize, maxItemSize int, headQ *deque.D
 
 		// A size out of range means the file is corrupt; there's no safe way to skip
 		// to the next record, so return what we have and let the caller rename it.
-		if itemSize < minItemSize || itemSize > maxItemSize {
+		if itemSize < q.minItemSize || itemSize > q.maxItemSize {
 			return bytesLoaded, fmt.Errorf("read invalid item size: %d", itemSize)
 		}
 
@@ -1113,13 +1142,23 @@ func (q *Queue) saveToFile(writePath string, memQ *deque.Deque[[]byte], sync boo
 		}
 	}()
 
-	writer := bufio.NewWriter(writeFile)
+	writer := q.bufWriterPool.Get().(*bufio.Writer)
+	writer.Reset(writeFile)
+	defer func() {
+		writer.Reset(nil)
+		q.bufWriterPool.Put(writer)
+	}()
 	var w io.Writer
 	var gzw *gzip.Writer
 
 	w = writer
 	if q.gzip {
-		gzw = gzip.NewWriter(writer)
+		gzw = q.gzipWriterPool.Get().(*gzip.Writer)
+		gzw.Reset(writer)
+		defer func() {
+			gzw.Reset(nil)
+			q.gzipWriterPool.Put(gzw)
+		}()
 		w = gzw
 	}
 
