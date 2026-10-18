@@ -20,9 +20,16 @@ go test -run TestBasicOperation ./...
 # Run tests with verbose output and race detector
 go test -v -race ./...
 
+# Run tests with internal invariant checks enabled
+go test -race -tags cascadeqdebug ./...
+
 # Lint (requires golangci-lint v2)
 golangci-lint run
 ```
+
+## Code style
+
+Limit comment lines in Go files to 80 characters, counted from the initial `//`, excluding any leading indentation or tabs used to align the comment with code. For a comment that follows code on the same line, count from its `//` to the end of the line. Fill each comment line as close to the limit as possible: a word moves to the next line only if it would push the current line past 80 characters. A line that ends a sentence may keep its line break when the next sentence starts a separate point. This applies to prose comments; leave lists, code examples, and directives such as `//go:build` or `//nolint` as they are.
 
 ## Design
 
@@ -40,14 +47,18 @@ The configured memory/item limits (`maxMemBytes`, `maxMemItems`) are divided in 
 
 New items go to headQ when both queues are empty and headQ has space. Otherwise they go to tailQ. When tailQ is full:
 - If no files exist and headQ has room, shift items from tailQ into headQ.
-- Otherwise, flush tailQ to the next numbered `.dat` file and clear tailQ.
+- Otherwise, flush tailQ to the next numbered `.dat` file asynchronously: tailQ is swapped with the empty `writeQ` (O(1)), the file number is pushed onto `q.files`, and a goroutine writes `writeQ` to the file and reports the result on `writeDone`.
+
+Only one asynchronous write runs at a time; `flushTail` first waits for any write in progress. While a write is in progress, `writeQ` is owned by the writer goroutine and the event loop must not touch it until the result is received. No other file is created while a write is in progress, so the file being written is always the last one in `q.files`. On write failure, the file number is popped from `q.files`, the items in `writeQ` are pushed back onto the front of tailQ, and `writeErr` is set. Any file already at the failed write's path is removed: it can only be a stale tail snapshot, and if file numbering resets before it is overwritten it would be replayed after reopening. The next flush then writes synchronously and returns the error to the caller if it fails again, so persistent failures cannot grow memory without bound. Clear, Stats, idle snapshots, and Close all wait for any in-progress write first.
+
+The `cascadeqdebug` build tag sets the `debug` constant (`debug_on.go`/`debug_off.go`), which enables invariant checks that panic when violated. `writeComplete` checks that the file being written is still the last entry in `q.files`. Without the tag, `debug` is false and the checks are compiled out.
 
 `PutBatch` enqueues a slice of items in a single event-loop visit using the same per-item logic; it stops at the first size-validation error, leaving earlier items enqueued.
 
 ### Read path
 
 Items are consumed from the front of headQ. When headQ empties:
-1. Load the next numbered file into headQ (then delete the file).
+1. Load the next numbered file into headQ (then delete the file). If that file is still being written, wait for the write to finish first (`awaitFile`).
 2. If no files, swap tailQ and headQ (O(1)).
 3. If neither, signal `Empty()` and stop sending on the output channel.
 
@@ -66,6 +77,7 @@ All state mutation happens inside one goroutine (`run`) via a `select` over:
 - `clearReqChan` (Clear)
 - `statsReqChan` (Stats)
 - `empty` channel (Empty signal)
+- `writeDone` channel (async overflow write completed; nil when no write is in progress)
 - `snapCheck` ticker (optional idle snapshot)
 - `q.input` closed (Close - `Close()` closes the input channel to signal the loop to exit)
 
