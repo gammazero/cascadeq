@@ -20,6 +20,7 @@ import (
 
 	"github.com/gammazero/cascadeq"
 	"github.com/gammazero/fsutil"
+	"github.com/gammazero/fsutil/atomicfile"
 )
 
 func TestBadSaveDir(t *testing.T) {
@@ -555,6 +556,52 @@ func TestBadFileNames(t *testing.T) {
 	stats := q.Stats()
 	if len(stats.Files) != 0 {
 		t.Fatal("should not have any files")
+	}
+}
+
+// TestRemoveOrphanedTempFiles checks that New removes the temporary files left
+// by atomic queue file writes that were interrupted, such as when the process
+// is killed, and leaves all other files alone.
+func TestRemoveOrphanedTempFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Make a real temp file the same way an overflow write does.
+	tmp, err := atomicfile.Create(filepath.Join(dir, "cq-1.dat"), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tmp.File.Close(); err != nil {
+		t.Fatal(err)
+	}
+	orphans := []string{filepath.Base(tmp.TempName()), "cq-0.dat-42", "cq-2.dat.gz-987654", "cq-a.dat-1"}
+	keep := []string{
+		"cq-1.dat.bad", "cq-1.dat.bad.2", "cq-1.dat-tmp", "cq-1.dat-", "cq-.dat-1",
+		"cq-x.dat-1", "other.dat-1", "cq-1.txt-1", "somefile-1",
+	}
+	for _, name := range append(orphans[1:], keep...) {
+		if err = os.WriteFile(filepath.Join(dir, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := makeQueue(t, dir)
+	if stats := q.Stats(); len(stats.Files) != 0 {
+		t.Fatalf("expected no queue files, got %v", stats.Files)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, len(entries))
+	for i, ent := range entries {
+		names[i] = ent.Name()
+	}
+	slices.Sort(keep)
+	if !slices.Equal(names, keep) {
+		t.Fatalf("expected files %v, got %v", keep, names)
 	}
 }
 
