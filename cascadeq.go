@@ -143,8 +143,8 @@ func WithMaxMemory(maxBytes int) func(*Queue) {
 }
 
 // WithMaxMemItems sets the maximum number of items that the queue keeps in
-// memory before items are written to disk. The value is rounded up to the
-// next power of two, so the effective limit may be larger than requested.
+// memory before items are written to disk. The value is rounded up to the next
+// power of two, so the effective limit may be larger than requested.
 // The effective limit is never less than 32.
 func WithMaxMemItems(maxItems int) func(*Queue) {
 	return func(q *Queue) {
@@ -465,8 +465,8 @@ func (q *Queue) run() {
 	tailQ.SetBaseCap(maxItems)
 
 	// Overflow files are written asynchronously, one at a time. While a write is
-	// in progress, writeQ is owned by the writer goroutine and must not be
-	// touched by the event loop until the result is received from writeDone.
+	// in progress, writeQ is owned by the writer goroutine and must not be touched
+	// by the event loop until the result is received from writeDone.
 	var (
 		writeQ      deque.Deque[[]byte]
 		writeQBytes int
@@ -522,14 +522,14 @@ func (q *Queue) run() {
 			// The failed write did not replace any file already at its path. That can only
 			// be a tail snapshot written while this was the next file number, and it is
 			// stale because the items are back in memory. Remove it, since file numbering
-			// may reset before it is overwritten, which would leave it to be replayed after
-			// the queue is reopened.
+			// may reset before it is overwritten, which would leave it to be replayed
+			// after the queue is reopened.
 			if err := os.Remove(writePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				q.logger.Error("failed to remove stale snapshot", slog.String("path", writePath), slog.Any("err", err))
 			}
-			// No other file is added while a write is in progress, so the failed file
-			// is the last one. Its items are older than everything in tailQ, so return
-			// them to the front of tailQ to keep them in order.
+			// No other file is added while a write is in progress, so the failed file is
+			// the last one. Its items are older than everything in tailQ, so return them
+			// to the front of tailQ to keep them in order.
 			if q.files.Len() != 0 && q.files.Back() == writeNum {
 				q.files.PopBack()
 			}
@@ -727,8 +727,8 @@ func (q *Queue) run() {
 			writeComplete(err)
 
 		case errChan := <-q.clearReqChan:
-			// Wait for any in-progress write so its file is not created after the
-			// files are removed.
+			// Wait for any in-progress write so its file is not created after the files
+			// are removed.
 			finishWrite()
 			writeErr = nil
 			snapCount = 0
@@ -746,8 +746,8 @@ func (q *Queue) run() {
 			errChan <- q.removeUnusedFiles(func(int64) bool { return false })
 
 		case rspChan := <-q.statsReqChan:
-			// Wait for any in-progress write so that Files lists only files that
-			// exist on disk.
+			// Wait for any in-progress write so that Files lists only files that exist on
+			// disk.
 			finishWrite()
 			rspChan <- Stats{
 				MaxQBytes:  maxBytes,
@@ -765,8 +765,8 @@ func (q *Queue) run() {
 			// snapCount == prevSnapCount means no Put or read since last tick (idle). Skip
 			// snapshot under load: overflow I/O already handles persistence.
 			if snapCount > 0 && snapCount == prevSnapCount {
-				// Snapshot files are numbered after the overflow files, so any
-				// in-progress write must complete first.
+				// Snapshot files are numbered after the overflow files, so any in-progress
+				// write must complete first.
 				finishWrite()
 				tq := &tailQ
 				// If overflow files exist and tailQ is full, flush tailQ as a regular overflow
@@ -848,9 +848,10 @@ func (q *Queue) readQueueDir() error {
 	return nil
 }
 
-// removeUnusedFiles removes each queue file in the queue directory whose number
-// is not in use, as reported by inUse. Files are matched by number under either
-// extension, since the gzip setting may have changed since a file was written.
+// removeUnusedFiles removes each queue file in the queue directory whose
+// number is not in use, as reported by inUse. Files are matched by number
+// under either extension, since the gzip setting may have changed since a file
+// was written.
 func (q *Queue) removeUnusedFiles(inUse func(fileNum int64) bool) error {
 	entries, err := os.ReadDir(q.dir)
 	if err != nil {
@@ -876,7 +877,8 @@ func (q *Queue) removeUnusedFiles(inUse func(fileNum int64) bool) error {
 
 // isTempFileName reports whether name is the name of a temp file written by
 // saveToFile. atomicfile writes each queue file to a temp file named after the
-// queue file, followed by "-" and a random decimal number, and then renames it.
+// queue file, followed by "-" and a random decimal number, and then renames
+// it.
 func isTempFileName(name string) bool {
 	i := strings.LastIndexByte(name, '-')
 	if i < 0 {
@@ -925,8 +927,8 @@ func (q *Queue) makeFilePath(fileNum int64) string {
 	return filepath.Join(q.dir, q.makeFileName(fileNum))
 }
 
-// toggleGzipExt returns filePath with the gzip extension removed if it has one,
-// or added if it does not.
+// toggleGzipExt returns filePath with the gzip extension removed if it has
+// one, or added if it does not.
 func toggleGzipExt(filePath string) string {
 	if p, ok := strings.CutSuffix(filePath, gzipExt); ok {
 		return p
@@ -968,8 +970,8 @@ func (q *Queue) loadQueueFromFile(headQ *deque.Deque[[]byte], awaitFile func(int
 
 	for q.files.Len() != 0 && headQ.Len() == 0 {
 		if awaitFile != nil {
-			// Wait for the file if it is still being written. If that write fails,
-			// the file is removed from q.files.
+			// Wait for the file if it is still being written. If that write fails, the
+			// file is removed from q.files.
 			awaitFile(q.files.Front())
 			if q.files.Len() == 0 {
 				break

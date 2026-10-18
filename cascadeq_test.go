@@ -108,8 +108,8 @@ func TestAsyncWriteReadWait(t *testing.T) {
 
 	q := makeQueue(t, t.TempDir(), cascadeq.WithMaxMemItems(32))
 
-	// Each round overflows to disk and then reads immediately, so reading must wait
-	// for the asynchronous write of the last file to finish.
+	// Each round overflows to disk and then reads immediately, so reading must
+	// wait for the asynchronous write of the last file to finish.
 	var wrn, rdn int
 	dst := make([][]byte, 7)
 	for i := range 50 {
@@ -206,8 +206,8 @@ func TestReadWaitsForFailedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Large incompressible items make the gzip write slow, so the write is still in
-	// progress when the Drain below needs the file.
+	// Large incompressible items make the gzip write slow, so the write is still
+	// in progress when the Drain below needs the file.
 	var seed [32]byte
 	copy(seed[:], "TestReadWaitsForFailedWrite-seed")
 	cc8 := rand.NewChaCha8(seed)
@@ -251,20 +251,20 @@ func TestReadWaitsForFailedWrite(t *testing.T) {
 	}
 }
 
-// TestFailedWriteRemovesStaleSnapshot checks that when an overflow write fails,
-// a tail snapshot previously written at the same file number is not left on
-// disk to be replayed after the queue is reopened. The write fails for real:
-// its temp file is deleted while it is being written, so the final rename
-// fails.
+// TestFailedWriteRemovesStaleSnapshot checks that when an overflow write
+// fails, a tail snapshot previously written at the same file number is not
+// left on disk to be replayed after the queue is reopened. The write fails for
+// real: its temp file is deleted while it is being written, so the final
+// rename fails.
 //
-// The test runs in a synctest bubble, so the idle snapshot happens without real
-// waiting, and no snapshot can happen while the test is not blocked.
+// The test runs in a synctest bubble, so the idle snapshot happens without
+// real waiting, and no snapshot can happen while the test is not blocked.
 //
 // The test races the writer goroutine twice: the temp file must be deleted
 // before the write finishes, and file 1 must be loaded before the event loop
 // handles the failure. Both races are nearly always won because each write is
-// slow, but losing one is not a queue error, so the scenario is then retried in
-// a new queue.
+// slow, but losing one is not a queue error, so the scenario is then retried
+// in a new queue.
 func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -349,10 +349,10 @@ func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 
 			// Items 33-47 fill the tail queue and item 48 starts the write of items 32-47
 			// to file 2. Delete its temp file as soon as it appears. Once the delete
-			// succeeds, the write has not been renamed into place and its final rename must
-			// fail, so the snapshot is checked only before each delete. This polls without
-			// sleeping, because the writer goroutine is doing file I/O and fake time does
-			// not advance until it is done.
+			// succeeds, the write has not been renamed into place and its final rename
+			// must fail, so the snapshot is checked only before each delete. This polls
+			// without sleeping, because the writer goroutine is doing file I/O and fake
+			// time does not advance until it is done.
 			put(16)
 			for {
 				fi, err := os.Stat(snapPath)
@@ -369,16 +369,16 @@ func TestFailedWriteRemovesStaleSnapshot(t *testing.T) {
 				runtime.Gosched()
 			}
 
-			// Read the head queue and the first item of file 1. This loads and removes file
-			// 1 without waiting for the write of file 2.
+			// Read the head queue and the first item of file 1. This loads and removes
+			// file 1 without waiting for the write of file 2.
 			drain(17)
 
 			// Only the event loop handles the write result, and it logs the failure before
-			// serving the next request. If the failure is not logged yet, file 1 was loaded
-			// while file 2 was still queued, so the failure leaves no queue files and
-			// refillHead's stale snapshot cleanup never runs for file 2. If it is logged,
-			// that cleanup removes the snapshot when file 1 is loaded, and the test would
-			// pass without checking writeComplete.
+			// serving the next request. If the failure is not logged yet, file 1 was
+			// loaded while file 2 was still queued, so the failure leaves no queue files
+			// and refillHead's stale snapshot cleanup never runs for file 2. If it is
+			// logged, that cleanup removes the snapshot when file 1 is loaded, and the
+			// test would pass without checking writeComplete.
 			if strings.Contains(logBuf.String(), "failed to write overflow file") {
 				return retry("write of file 2 failed before file 1 was loaded")
 			}
@@ -470,7 +470,8 @@ func TestDisappearingOverflowDir(t *testing.T) {
 	if stats := q.Stats(); stats.TailQLen != 17 || len(stats.Files) != 0 {
 		t.Fatalf("expected 17 items in tail queue and no files, got %d items and %d files", stats.TailQLen, len(stats.Files))
 	}
-	// This Put retries the failed write synchronously, which fails and is reported.
+	// This Put retries the failed write synchronously, which fails and is
+	// reported.
 	if err = q.Put([]byte("world")); err == nil {
 		t.Fatal("expected error")
 	}
@@ -823,7 +824,8 @@ func TestPutBatch(t *testing.T) {
 		}
 	}
 
-	// Error on invalid item mid-batch: items before it are enqueued, after are not.
+	// Error on invalid item mid-batch: items before it are enqueued, after are
+	// not.
 	oversized := make([]byte, cascadeq.DefaultMaxItemSize+1)
 	mixed := [][]byte{[]byte("ok1"), oversized, []byte("ok2")}
 	err := q.PutBatch(mixed)
@@ -1308,9 +1310,9 @@ func TestGzipOnOffAcrossSave(t *testing.T) {
 }
 
 // TestCorruptGzipFiles reads valid gzip queue files between ones that fail to
-// read, one with an invalid gzip header and one truncated after its header. The
-// pooled gzip and buffered readers used for a file that fails must read the
-// following files correctly.
+// read, one with an invalid gzip header and one truncated after its header.
+// The pooled gzip and buffered readers used for a file that fails must read
+// the following files correctly.
 func TestCorruptGzipFiles(t *testing.T) {
 	t.Parallel()
 
@@ -1780,8 +1782,8 @@ func TestMissingAndEmptyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Stats was taken before close so it is missing file-0. This will delete file 3
-	// and truncate4, leaving files 0, 1, 2, 6, 7 with data.
+	// Stats was taken before close so it is missing file-0. This will delete file
+	// 3 and truncate4, leaving files 0, 1, 2, 6, 7 with data.
 	name := filepath.Join(q.Dir(), stats.Files[2])
 	os.Remove(name)
 	t.Log("removed file", name)
